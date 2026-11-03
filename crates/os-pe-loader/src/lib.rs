@@ -10,6 +10,9 @@
 //! implementate: nessun percorso verificato del modulo le attraversa (sui 78 casi di
 //! regressione di Windows nemmeno), quindi i relativi shim terminano con un messaggio.
 
+// Solo Linux x86-64 (mmap, memfd, arch_prctl per il GS): altrove il crate è vuoto, così
+// `cargo build` del workspace funziona anche su Windows, dove il backend è os-dap-host.
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 // La tabella degli shim e le vtable elencano funzioni come indirizzi: è il meccanismo
 // stesso di una IAT.
 #![allow(function_casts_as_integer)]

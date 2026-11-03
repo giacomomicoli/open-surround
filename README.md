@@ -168,7 +168,7 @@ Some `info.txt` files reference their input with an absolute Windows path; the i
 | 1 | Windows host that loads the module and renders WAV → binaural stereo, identical to Windows | done |
 | 2 | Shared core `os-dap-core` behind a backend trait | done |
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
-| 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3 |
+| 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds |
 | 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | next |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |

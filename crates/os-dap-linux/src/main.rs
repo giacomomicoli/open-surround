@@ -6,10 +6,19 @@
 // Le vtable COM elencano funzioni come indirizzi: è il meccanismo stesso di una vtable.
 #![allow(function_casts_as_integer)]
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod backend;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod com;
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() -> anyhow::Result<()> {
     let args = os_dap_core::offline::Args::from_env()?;
     os_dap_core::offline::run::<backend::LinuxBackend>(&args)
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+fn main() {
+    eprintln!("os-dap-linux è il backend Linux x86-64: su Windows usare os-dap-host");
+    std::process::exit(1);
 }
