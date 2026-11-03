@@ -116,7 +116,16 @@ stereo float32. Main options (`--help` for all of them):
   `target/verify` without Dolby Access, compares against the Windows loopback and optionally
   against another build byte for byte. This is the acceptance test for every later phase.
 
-The recordings in `target/verify` are large and are not part of the repository.
+The recordings in `target/verify` are large and are not part of the repository. The synthetic-signal
+cases (75 captures with their test signals) are published as a release asset:
+
+```
+gh release download verify-data-2026-11-03 -p verify-data.tar.gz
+tar -xzf verify-data.tar.gz -C target
+```
+
+Some `info.txt` files reference their input with an absolute Windows path; the input files are in
+`target/verify/signals/`.
 
 ## Roadmap
 
