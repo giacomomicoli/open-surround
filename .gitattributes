@@ -1,0 +1,7 @@
+* text=auto
+*.rs text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.pl text eol=lf
+*.ps1 text eol=crlf
+*.bin binary

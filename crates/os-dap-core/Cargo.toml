@@ -1,0 +1,13 @@
+[package]
+name = "os-dap-core"
+description = "Platform-independent core: data and gain chain handed to the original Dolby DAP-VR module"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = "1"
+hound = "3.5"
