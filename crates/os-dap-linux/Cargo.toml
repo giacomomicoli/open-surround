@@ -1,0 +1,14 @@
+[package]
+name = "os-dap-linux"
+description = "Linux backend: loads the original Dolby DAP-VR module with the native PE loader"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+os-dap-core = { path = "../os-dap-core" }
+os-pe-loader = { path = "../os-pe-loader" }
+anyhow = "1"

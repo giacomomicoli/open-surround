@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/os-dap-core", "crates/os-dap-host", "crates/os-verify"]
+members = [
+    "crates/os-dap-core",
+    "crates/os-dap-host",
+    "crates/os-dap-linux",
+    "crates/os-pe-loader",
+    "crates/os-verify",
+]
 
 [workspace.package]
 edition = "2021"
