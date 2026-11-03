@@ -26,15 +26,13 @@ const AUDIO_SIGNALPROCESSINGMODE_DEFAULT: GUID = GUID::from_u128(0xc18e2f7e_933d
 pub const IID_IDAPMODULE2: GUID = GUID::from_u128(0x2b2e53bc_651b_4a90_8f64_38531c154fda);
 /// Interfaccia ausiliaria: slot 3 = SetAPOInitParameters(APOInitSystemEffects3*).
 ///
-/// ATTENZIONE (doc sez. 12.6/12.11, 3/11/2026): lo shell Microsoft (DolbyHrtfEnc) chiama
-/// SetAPOInitParameters con QI(b5bb3cae-fd91-497d-8b83-2eddce0808db); l'IID qui sotto
-/// (67b16434) è in realtà l'interfaccia delle notifiche, il cui slot 3 nel modulo è
-/// GetApoNotificationRegistrationInfo (su Linux ritorna E_FAIL se il contesto APO non è
-/// valido). Questo host con 67b16434 è comunque stato verificato identico a Windows
-/// (12.9-12.10): prima di cambiare l'IID, controllare con -v quale vtable risolve quel QI
-/// su Windows (aspettarsi i log di SetAPOInitParameters e la mappa DSO
-/// Global\MAPPING-FILE-{guid dell'endpoint}). Il backend Linux (os-dap-linux) usa b5bb3cae.
-pub const IID_DAP_APO_INIT: GUID = GUID::from_u128(0x67b16434_1ef3_47bc_8d2b_f485ee148c32);
+/// È l'IID che usa lo shell Microsoft (DolbyHrtfEnc, RVA […]) e lo stesso del backend Linux
+/// (doc sez. 12.12, aperti ereditati). Fino alla fase 3 qui c'era 67b16434-1ef3-47bc-8d2b-
+/// f485ee148c32, che il modulo risolve in un'altra interfaccia (notifiche: slot 3 =
+/// GetApoNotificationRegistrationInfo, RVA […], contro […] di SetAPOInitParameters):
+/// con quell'IID la chiamata restituisce E_FAIL "configuration did not succeed" (provato con
+/// il loader PE sullo stesso DLL). Da riconfermare su Windows con regress-host.ps1 -Baseline.
+pub const IID_DAP_APO_INIT: GUID = GUID::from_u128(0xb5bb3cae_fd91_497d_8b83_2eddce0808db);
 
 type FnDllGetActivationFactory = unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT;
 type FnInitialize = unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> HRESULT;

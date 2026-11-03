@@ -14,8 +14,10 @@ use crate::pe::ImportName;
 use crate::shims;
 use crate::teb;
 
-/// Base degli handle fake (vedi handles::HANDLE_BASE per la stessa idea).
-const FAKE_BASE: u64 = 0x7000_0000_1000;
+/// Base degli handle fake (vedi handles::HANDLE_BASE per la stessa idea). Era 0x7000_0000_1000,
+/// dentro l'intervallo degli handle kernel (HANDLE_BASE + 8·n raggiungeva questi valori al
+/// 512° oggetto): ora gli intervalli sono disgiunti.
+const FAKE_BASE: u64 = 0x7800_0000_0000;
 
 static FAKES: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static NEXT_FAKE: AtomicU32 = AtomicU32::new(1);
@@ -136,8 +138,12 @@ unsafe fn module_handle_ex(flags: u32, any: usize, out: *mut *mut c_void) -> i32
     0
 }
 
+/// GetModuleFileNameW: se il percorso entra nel buffer restituisce la sua lunghezza **senza**
+/// il NUL; altrimenti tronca a `size - 1` caratteri + NUL, restituisce `size` e imposta
+/// ERROR_INSUFFICIENT_BUFFER (comportamento da Windows Vista in poi).
 pub(crate) unsafe extern "win64" fn get_module_file_name_w(hmod: *mut c_void, buf: *mut u16, size: u32) -> u32 {
     if buf.is_null() || size == 0 {
+        teb::set_last_error(122 /* ERROR_INSUFFICIENT_BUFFER */);
         return 0;
     }
     let base = hmod as usize;
@@ -152,12 +158,17 @@ pub(crate) unsafe extern "win64" fn get_module_file_name_w(hmod: *mut c_void, bu
         return 0;
     };
     let wide: Vec<u16> = path.encode_utf16().collect();
-    let n = (size as usize).saturating_sub(1).min(wide.len());
+    let n = (size as usize - 1).min(wide.len());
     unsafe {
         std::ptr::copy_nonoverlapping(wide.as_ptr(), buf, n);
         *buf.add(n) = 0;
     }
-    n as u32 + 1
+    if n < wide.len() {
+        teb::set_last_error(122 /* ERROR_INSUFFICIENT_BUFFER */);
+        size
+    } else {
+        n as u32
+    }
 }
 
 pub(crate) unsafe extern "win64" fn get_proc_address(hmod: *mut c_void, name: *const i8) -> *mut c_void {
@@ -173,17 +184,20 @@ pub(crate) unsafe extern "win64" fn get_proc_address(hmod: *mut c_void, name: *c
         let s = unsafe { CStr::from_ptr(name).to_string_lossy().into_owned() };
         ImportName::Name(s)
     };
-    // DLL a cui l'handle si riferisce: il modulo vero usa il suo nome, i fake il loro.
+    // Un modulo caricato davvero risponde con i suoi export, come su Windows (gli shim sono
+    // le DLL di sistema, non lui); gli handle fake con gli shim.
     let base = hmod as usize;
-    let dll = if let Some(image) = image_by_base(base) {
-        image
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    } else {
-        fake_name_of(base as u64).unwrap_or_else(|| "kernel32.dll".into())
-    };
+    if let Some(image) = image_by_base(base) {
+        let found = match &import {
+            ImportName::Name(n) => image.export(n),
+            ImportName::Ordinal(_) => None, // il modulo non esporta per ordinale
+        };
+        return found.map(|a| a as *mut c_void).unwrap_or_else(|| {
+            teb::set_last_error(127 /* ERROR_PROC_NOT_FOUND */);
+            std::ptr::null_mut()
+        });
+    }
+    let dll = fake_name_of(base as u64).unwrap_or_else(|| "kernel32.dll".into());
     match shims::resolve(&dll, &import) {
         Some(addr) => addr as *mut c_void,
         None => {
@@ -193,8 +207,17 @@ pub(crate) unsafe extern "win64" fn get_proc_address(hmod: *mut c_void, name: *c
     }
 }
 
-pub(crate) unsafe extern "win64" fn disable_thread_library_calls(_hmod: *mut c_void) -> i32 {
-    1
+pub(crate) unsafe extern "win64" fn disable_thread_library_calls(hmod: *mut c_void) -> i32 {
+    match image_by_base(hmod as usize) {
+        Some(image) => {
+            image.disable_thread_calls();
+            1
+        }
+        None => {
+            teb::set_last_error(6 /* ERROR_INVALID_HANDLE */);
+            0
+        }
+    }
 }
 
 // ---- Risorse del modulo ----
@@ -247,4 +270,25 @@ pub(crate) unsafe extern "win64" fn size_of_resource(_hmod: *mut c_void, hrsrc: 
         return 0;
     }
     unsafe { (*entry).size }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_file_name_length() {
+        teb::install();
+        let mut buf = [0xFFFFu16; 64];
+        // "os-dap-linux.exe" = 16 caratteri
+        let n = unsafe { get_module_file_name_w(std::ptr::null_mut(), buf.as_mut_ptr(), 64) };
+        assert_eq!(n, 16, "lunghezza senza NUL");
+        assert_eq!(buf[16], 0);
+        let n = unsafe { get_module_file_name_w(std::ptr::null_mut(), buf.as_mut_ptr(), 17) };
+        assert_eq!(n, 16, "entra esattamente con il NUL");
+        let n = unsafe { get_module_file_name_w(std::ptr::null_mut(), buf.as_mut_ptr(), 8) };
+        assert_eq!(n, 8, "troncato: size");
+        assert_eq!(buf[7], 0);
+        assert_eq!(teb::last_error(), 122);
+    }
 }
