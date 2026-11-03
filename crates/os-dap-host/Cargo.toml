@@ -11,10 +11,12 @@ authors.workspace = true
 [dependencies]
 os-dap-core = { path = "../os-dap-core" }
 anyhow = "1"
+
+[target.'cfg(windows)'.dependencies]
 hound = "3.5"
 windows-core = "0.62"
 
-[dependencies.windows]
+[target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
 features = [
     "Win32_Foundation",
