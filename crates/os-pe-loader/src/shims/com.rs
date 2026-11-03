@@ -60,7 +60,7 @@ pub(crate) unsafe extern "win64" fn co_uninitialize() {}
 /// GUID v4 da /dev/urandom (al modulo serve solo un identificatore qualunque).
 pub(crate) unsafe extern "win64" fn co_create_guid(guid: *mut u8) -> i32 {
     if guid.is_null() {
-        return 0x8000_0003u32 as i32;
+        return 0x8007_0057u32 as i32; // E_INVALIDARG
     }
     let mut rnd = [0u8; 16];
     if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
@@ -103,7 +103,7 @@ pub(crate) unsafe extern "win64" fn ftm_query_interface(this: *mut c_void, iid: 
     let _ = this;
     unsafe { out.write(std::ptr::null_mut()) };
     if iid.is_null() {
-        return 0x8000_0003u32 as i32;
+        return 0x8007_0057u32 as i32; // E_INVALIDARG
     }
     const IID_IUNKNOWN: [u8; 16] = guid_bytes(0x0000_0000_0000_0000_c000_0000_0000_0046);
     const IID_IMARSHAL: [u8; 16] = guid_bytes(0x0000_0003_0000_0000_c000_0000_0000_0046);
@@ -137,7 +137,7 @@ static FTM_VTABLE: FtmVtbl = FtmVtbl {
 
 pub(crate) unsafe extern "win64" fn co_create_free_threaded_marshaler(_outer: *mut c_void, out: *mut *mut c_void) -> i32 {
     if out.is_null() {
-        return 0x8000_0003u32 as i32;
+        return 0x8007_0057u32 as i32; // E_INVALIDARG
     }
     let obj = Box::new(FtmObj { vtbl: &FTM_VTABLE });
     unsafe { *out = Box::into_raw(obj) as *mut c_void };
@@ -153,7 +153,7 @@ struct FtmObj {
 
 pub(crate) unsafe extern "win64" fn prop_variant_clear(pv: *mut c_void) -> i32 {
     if pv.is_null() {
-        return 0x8000_0003u32 as i32;
+        return 0x8007_0057u32 as i32; // E_INVALIDARG
     }
     let p = pv as *mut u8;
     unsafe {
@@ -189,7 +189,7 @@ pub(crate) unsafe extern "win64" fn prop_variant_clear(pv: *mut c_void) -> i32 {
 
 pub(crate) unsafe extern "win64" fn init_prop_variant_from_clsid(clsid: *const u8, pv: *mut c_void) -> i32 {
     if clsid.is_null() || pv.is_null() {
-        return 0x8000_0003u32 as i32;
+        return 0x8007_0057u32 as i32; // E_INVALIDARG
     }
     let copy = crate::shims::heap::alloc_bytes(16, false);
     if copy.is_null() {

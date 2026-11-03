@@ -59,7 +59,7 @@ pub(crate) unsafe extern "win64" fn windows_create_string_reference(
     hs_out: *mut u64,
 ) -> i32 {
     if header.is_null() || hs_out.is_null() {
-        return 0x8000_0003u32 as i32; // E_INVALIDARG
+        return 0x8007_0057u32 as i32; // E_INVALIDARG
     }
     unsafe {
         let h = header as *mut HsRef;
@@ -79,7 +79,7 @@ pub(crate) unsafe extern "win64" fn windows_create_string_reference(
 
 pub(crate) unsafe extern "win64" fn windows_create_string(src: *const u16, len: u32, hs_out: *mut u64) -> i32 {
     if hs_out.is_null() {
-        return 0x8000_0003u32 as i32;
+        return 0x8007_0057u32 as i32; // E_INVALIDARG
     }
     if src.is_null() || len == 0 {
         unsafe { hs_out.write(0) };
@@ -110,9 +110,16 @@ pub(crate) unsafe extern "win64" fn windows_is_string_empty(hs: u64) -> i32 {
     (len == 0) as i32
 }
 
-pub(crate) unsafe extern "win64" fn windows_string_has_embedded_null(hs: u64) -> i32 {
+/// `HRESULT WindowsStringHasEmbeddedNull(HSTRING string, BOOL* hasEmbedNull)`: TRUE se c'è un
+/// NUL tra i primi `len` caratteri (quello finale non conta).
+pub(crate) unsafe extern "win64" fn windows_string_has_embedded_null(hs: u64, has_embed_null: *mut i32) -> i32 {
+    if has_embed_null.is_null() {
+        return 0x8007_0057u32 as i32; // E_INVALIDARG
+    }
     let (buf, len) = unsafe { buffer_of(hs, std::ptr::null_mut()) };
-    unsafe { (0..len as usize).any(|i| *buf.add(i) == 0) as i32 }
+    let found = unsafe { (0..len as usize).any(|i| *buf.add(i) == 0) };
+    unsafe { has_embed_null.write(found as i32) };
+    0
 }
 
 pub(crate) unsafe extern "win64" fn ro_originate_error(_error: i32, _message: u64) -> i32 {
@@ -176,7 +183,9 @@ mod tests {
         let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(buf, len as usize) });
         assert_eq!(s, "Dolby.DolbyAudioProcessingModule");
         assert_eq!(unsafe { windows_is_string_empty(hs) }, 0);
-        assert_eq!(unsafe { windows_string_has_embedded_null(hs) }, 0);
+        let mut has = -1i32;
+        assert_eq!(unsafe { windows_string_has_embedded_null(hs, &mut has) }, 0);
+        assert_eq!(has, 0);
         drop(r); // i dati muoiono con il riferimento, come su Windows
     }
 
@@ -190,6 +199,21 @@ mod tests {
         assert_eq!(len as usize, wide.len());
         let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(buf, len as usize) });
         assert_eq!(s, "città");
+    }
+
+    #[test]
+    fn embedded_null() {
+        let wide: Vec<u16> = "a\0b".encode_utf16().collect();
+        let mut hs = 0u64;
+        unsafe { windows_create_string(wide.as_ptr(), wide.len() as u32, &mut hs as *mut u64) };
+        let mut has = 0i32;
+        assert_eq!(unsafe { windows_string_has_embedded_null(hs, &mut has) }, 0);
+        assert_eq!(has, 1);
+        // stringa vuota (HSTRING nullo): nessun NUL interno
+        has = -1;
+        assert_eq!(unsafe { windows_string_has_embedded_null(0, &mut has) }, 0);
+        assert_eq!(has, 0);
+        assert_eq!(unsafe { windows_string_has_embedded_null(hs, std::ptr::null_mut()) }, 0x8007_0057u32 as i32);
     }
 
     #[test]

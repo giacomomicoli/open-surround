@@ -36,11 +36,14 @@ fn iid_from_bytes(b: &[u8; 16]) -> u128 {
     os_pe_loader::shims::com::guid_from_bytes(b)
 }
 
+// Valori dell'SDK (windows-0.62.2: Media/Audio/mod.rs per IMMDevice e IMMDeviceCollection,
+// UI/Shell/PropertiesSystem per IPropertyStore, Media/Audio/Apo per l'FX store): i test
+// li confrontano con le stringhe degli header (mmdeviceapi.h, propsys.h, audioenginebaseapo.h).
 const IID_IUNKNOWN: u128 = 0x0000_0000_0000_0000_c000_0000_0000_0046;
 const IID_IPROPERTYSTORE: u128 = 0x886d_8eeb_8cf2_4446_8d02_cdba_1dbd_cf99;
 const IID_IAUDIOSYSTEMEFFECTSPROPERTYSTORE: u128 = 0x302a_e7f9_d7e0_43e4_971b_1f82_9361_3d2a;
-const IID_IMMDEVICE: u128 = 0xd666_063f_158c_4f43_9117_80f8_b435_c1c1;
-const IID_IMMDEVICECOLLECTION: u128 = 0x0bd7_a1be_7a1a_44db_8397_cc53_923f_7274;
+const IID_IMMDEVICE: u128 = 0xd666_063f_1587_4e43_81f1_b948_e807_363f;
+const IID_IMMDEVICECOLLECTION: u128 = 0x0bd7_a1be_7a1a_44db_8397_cc53_9238_7b5e;
 
 /// Allocazione coerente con CoTaskMemAlloc/CoTaskMemFree del modulo (stesso heap).
 fn co_alloc(bytes: &[u8]) -> *mut u8 {
@@ -440,5 +443,50 @@ mod tests {
 
     unsafe fn write_propvariable(pv: *mut u8, v: &Value) {
         unsafe { write_propvariant(pv, v) }
+    }
+
+    #[test]
+    fn iids_match_sdk_headers() {
+        let text = |u: u128| format!("{:?}", os_dap_core::Guid(u));
+        assert_eq!(text(IID_IMMDEVICE), "D666063F-1587-4E43-81F1-B948E807363F");
+        assert_eq!(text(IID_IMMDEVICECOLLECTION), "0BD7A1BE-7A1A-44DB-8397-CC5392387B5E");
+        assert_eq!(text(IID_IPROPERTYSTORE), "886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+        assert_eq!(text(IID_IAUDIOSYSTEMEFFECTSPROPERTYSTORE), "302AE7F9-D7E0-43E4-971B-1F8293613D2A");
+        assert_eq!(text(IID_IUNKNOWN), "00000000-0000-0000-C000-000000000046");
+    }
+
+    /// QueryInterface di un oggetto (slot 0) con l'IID dato.
+    unsafe fn qi(obj: *mut c_void, iid: u128) -> (i32, *mut c_void) {
+        let mut out: *mut c_void = std::ptr::null_mut();
+        let hr = unsafe {
+            let vtbl = *(obj as *const *const usize);
+            let f: unsafe extern "win64" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32 = std::mem::transmute(*vtbl);
+            f(obj, iid_bytes(iid).as_ptr(), &mut out)
+        };
+        (hr, out)
+    }
+
+    #[test]
+    fn every_object_answers_its_own_iid() {
+        let setup = ModuleSetup::new(std::path::Path::new("x.dll"), os_dap_core::Mode::Headphones, 256, Vec::new(), false).unwrap();
+        let ep = make_endpoint(&setup);
+        let collection = ep.collection as *mut c_void;
+        let device = unsafe { (*(collection as *mut DeviceCollection)).device } as *mut c_void;
+        let fx = unsafe { (*(device as *mut Device)).fx } as *mut c_void;
+        let user = unsafe { (*(fx as *mut FxStore)).user } as *mut c_void;
+        let props = ep.endpoint_props as *mut c_void;
+        for (obj, iid) in [
+            (collection, IID_IMMDEVICECOLLECTION),
+            (device, IID_IMMDEVICE),
+            (fx, IID_IAUDIOSYSTEMEFFECTSPROPERTYSTORE),
+            (user, IID_IPROPERTYSTORE),
+            (props, IID_IPROPERTYSTORE),
+        ] {
+            assert_eq!(unsafe { qi(obj, iid) }, (S_OK, obj), "QI({:?})", os_dap_core::Guid(iid));
+            assert_eq!(unsafe { qi(obj, IID_IUNKNOWN) }, (S_OK, obj));
+        }
+        // e non risponde a quelli degli altri
+        assert_eq!(unsafe { qi(device, IID_IMMDEVICECOLLECTION) }.0, 0x8000_4002u32 as i32);
+        assert_eq!(unsafe { qi(collection, IID_IMMDEVICE) }.1, std::ptr::null_mut());
     }
 }
