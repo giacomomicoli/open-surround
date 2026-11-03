@@ -1,7 +1,7 @@
 //! Il resto del CRT statico MSVC: errori, tempo, localizzazione, conversioni di stringa,
 //! ambiente, console, file (solo std handle), assert via MessageBox (stampati come fa
 //! l'host Windows), eccezioni (abort informativo: l'unwinding x64 SEH non è implementato,
-//! nel percorso offline verificato non serve), AVRT, RTWorkQ, SDDL.
+//! nel percorso offline verificato non serve), AVRT, SDDL. RTWorkQ sta in `rtwq`.
 
 use std::ffi::{c_void, CStr};
 
@@ -9,7 +9,6 @@ use crate::shims::etw::VERBOSE;
 use crate::shims::handles::{STD_ERROR, STD_INPUT, STD_OUTPUT};
 use crate::teb;
 
-const S_OK: i32 = 0;
 const TRUE: i32 = 1;
 const INVALID_HANDLE_VALUE: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
@@ -75,9 +74,50 @@ pub(crate) unsafe extern "win64" fn is_debugger_present() -> i32 {
     0
 }
 
+/// IsProcessorFeaturePresent, una feature alla volta (PF_* di winnt.h / windows-0.62.2
+/// System/Threading). Le estensioni SIMD si leggono dalla CPU: se una versione del modulo
+/// scegliesse il percorso DSP con questa API, deve scegliere lo stesso che su Windows.
 pub(crate) unsafe extern "win64" fn is_processor_feature_present(feature: u32) -> i32 {
-    // Le feature x86-64 che il CRT MSVC può chiedere ci sono tutte su questa macchina.
-    matches!(feature, 0..=36).into()
+    processor_feature(feature) as i32
+}
+
+fn processor_feature(feature: u32) -> bool {
+    use std::arch::x86_64::__cpuid;
+    let ext1 = __cpuid(0x8000_0001);
+    let leaf7 = std::arch::x86_64::__cpuid_count(7, 0);
+    match feature {
+        0 => false, // PF_FLOATING_POINT_PRECISION_ERRATA (bug FDIV del Pentium)
+        1 => false, // PF_FLOATING_POINT_EMULATED
+        2 => true,  // PF_COMPARE_EXCHANGE_DOUBLE (cmpxchg8b: ogni CPU x86-64)
+        3 => is_x86_feature_detected!("mmx"),
+        6 => is_x86_feature_detected!("sse"),
+        7 => ext1.edx & (1 << 31) != 0, // PF_3DNOW_INSTRUCTIONS_AVAILABLE
+        8 => is_x86_feature_detected!("tsc"),
+        9 => true,  // PF_PAE_ENABLED (sempre in long mode)
+        10 => is_x86_feature_detected!("sse2"),
+        11 => true, // PF_SSE_DAZ_MODE_AVAILABLE (ogni CPU con SSE2 dal Pentium 4 in poi)
+        12 => true, // PF_NX_ENABLED (Linux x86-64 usa NX)
+        13 => is_x86_feature_detected!("sse3"),
+        14 => is_x86_feature_detected!("cmpxchg16b"),
+        17 => is_x86_feature_detected!("xsave"),
+        // PF_RDWRFSGSBASE_AVAILABLE: FALSE apposta, il GS base appartiene al loader (TEB).
+        22 => false,
+        23 => true, // PF_FASTFAIL_AVAILABLE (Windows 8+: __fastfail = int 29h)
+        28 => is_x86_feature_detected!("rdrand"),
+        32 => ext1.edx & (1 << 27) != 0, // PF_RDTSCP_INSTRUCTION_AVAILABLE
+        33 => leaf7.ecx & (1 << 22) != 0, // PF_RDPID_INSTRUCTION_AVAILABLE
+        35 => ext1.ecx & (1 << 29) != 0, // PF_MONITORX_INSTRUCTION_AVAILABLE (AMD)
+        36 => is_x86_feature_detected!("ssse3"),
+        37 => is_x86_feature_detected!("sse4.1"),
+        38 => is_x86_feature_detected!("sse4.2"),
+        39 => is_x86_feature_detected!("avx"),
+        40 => is_x86_feature_detected!("avx2"),
+        41 => is_x86_feature_detected!("avx512f"),
+        42 => is_x86_feature_detected!("ermsb"), // PF_ERMS_AVAILABLE
+        // 4, 5, 15: PowerPC/Alpha/Itanium; 16, 18-21, 24-27, 29-31, 34, 43+: ARM o
+        // virtualizzazione (SLAT, firmware), irrilevanti per un DLL x86-64 in user mode.
+        _ => false,
+    }
 }
 
 // ---- exception / terminazione ----
@@ -744,134 +784,6 @@ pub(crate) unsafe extern "win64" fn av_revert_mm_thread_characteristics(_h: *mut
     TRUE
 }
 
-// ---- RTWorkQ ----
-
-/// IRtwqAsyncResult: IUnknown (slot 0-2) + GetObject, GetState, GetStateNoAddRef,
-/// GetStatus, SetStatus (slot 3-7). Il callback è chiamato inline da PutWorkItem.
-#[repr(C)]
-struct AsyncResult {
-    vtbl: &'static AsyncResultVtbl,
-    app_object: *mut c_void,
-    callback: *mut c_void,
-    hr: i32,
-}
-
-pub(crate) unsafe extern "win64" fn ar_query_interface(this: *mut c_void, iid: *const u8, out: *mut *mut c_void) -> i32 {
-    let _ = (this, iid);
-    // Il modulo non fa QI sul risultato (verificato: nessun uso noto); rispondiamo noi stessi.
-    unsafe { out.write(this) };
-    S_OK
-}
-
-pub(crate) unsafe extern "win64" fn ar_add_ref(_this: *mut c_void) -> u32 {
-    2
-}
-
-pub(crate) unsafe extern "win64" fn ar_release(_this: *mut c_void) -> u32 {
-    1
-}
-
-pub(crate) unsafe extern "win64" fn ar_get_object(this: *mut c_void, out: *mut *mut c_void) -> i32 {
-    let r = this as *mut AsyncResult;
-    unsafe { out.write((*r).app_object) };
-    S_OK
-}
-
-pub(crate) unsafe extern "win64" fn ar_get_state(this: *mut c_void, out: *mut *mut c_void) -> i32 {
-    let _ = this;
-    unsafe { out.write(std::ptr::null_mut()) };
-    S_OK
-}
-
-pub(crate) unsafe extern "win64" fn ar_get_state_no_add_ref(this: *mut c_void) -> *mut c_void {
-    let _ = this;
-    std::ptr::null_mut()
-}
-
-pub(crate) unsafe extern "win64" fn ar_get_status(this: *mut c_void) -> i32 {
-    unsafe { (*(this as *mut AsyncResult)).hr }
-}
-
-pub(crate) unsafe extern "win64" fn ar_set_status(this: *mut c_void, hr: i32) -> i32 {
-    unsafe { (*(this as *mut AsyncResult)).hr = hr };
-    S_OK
-}
-
-pub(crate) unsafe extern "win64" fn ar_get_error_code(this: *mut c_void) -> i32 {
-    unsafe { (*(this as *mut AsyncResult)).hr }
-}
-
-pub(crate) unsafe extern "win64" fn ar_set_error_code(this: *mut c_void, hr: i32) -> i32 {
-    unsafe { (*(this as *mut AsyncResult)).hr = hr };
-    S_OK
-}
-
-pub(crate) unsafe extern "win64" fn ar_get_result(this: *mut c_void) -> *mut c_void {
-    unsafe { (*(this as *mut AsyncResult)).app_object }
-}
-
-#[repr(C)]
-struct AsyncResultVtbl {
-    query_interface: unsafe extern "win64" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32,
-    add_ref: unsafe extern "win64" fn(*mut c_void) -> u32,
-    release: unsafe extern "win64" fn(*mut c_void) -> u32,
-    get_object: unsafe extern "win64" fn(*mut c_void, *mut *mut c_void) -> i32,
-    get_state: unsafe extern "win64" fn(*mut c_void, *mut *mut c_void) -> i32,
-    get_state_no_add_ref: unsafe extern "win64" fn(*mut c_void) -> *mut c_void,
-    get_status: unsafe extern "win64" fn(*mut c_void) -> i32,
-    set_status: unsafe extern "win64" fn(*mut c_void, i32) -> i32,
-    get_error_code: unsafe extern "win64" fn(*mut c_void) -> i32,
-    set_error_code: unsafe extern "win64" fn(*mut c_void, i32) -> i32,
-    get_result: unsafe extern "win64" fn(*mut c_void) -> *mut c_void,
-}
-
-static ASYNC_RESULT_VTABLE: AsyncResultVtbl = AsyncResultVtbl {
-    query_interface: ar_query_interface,
-    add_ref: ar_add_ref,
-    release: ar_release,
-    get_object: ar_get_object,
-    get_state: ar_get_state,
-    get_state_no_add_ref: ar_get_state_no_add_ref,
-    get_status: ar_get_status,
-    set_status: ar_set_status,
-    get_error_code: ar_get_error_code,
-    set_error_code: ar_set_error_code,
-    get_result: ar_get_result,
-};
-
-pub(crate) unsafe extern "win64" fn rtwq_create_async_result(
-    app_object: *mut c_void,
-    callback: *mut c_void,
-    hr: i32,
-    out: *mut *mut c_void,
-) -> i32 {
-    if out.is_null() {
-        return 0x8000_0003u32 as i32;
-    }
-    let r = Box::new(AsyncResult { vtbl: &ASYNC_RESULT_VTABLE, app_object, callback, hr });
-    unsafe { *out = Box::into_raw(r) as *mut c_void };
-    S_OK
-}
-
-/// Il work item viene eseguito subito sul thread chiamante: stesse conseguenze di un
-/// PutWorkItem su una coda sincrona, ordine a parte (parametri uguali).
-pub(crate) unsafe extern "win64" fn rtwq_put_work_item(_queue: u32, _priority: i32, result: *mut c_void) -> i32 {
-    let r = result as *mut AsyncResult;
-    if r.is_null() {
-        return 0x8000_0003u32 as i32;
-    }
-    let callback = unsafe { (*r).callback };
-    if !callback.is_null() {
-        // IRtwqAsyncCallback::Invoke = slot 3 della vtable del callback.
-        unsafe {
-            let vtbl = *(callback as *mut *const usize);
-            let invoke: unsafe extern "win64" fn(*mut c_void, *mut c_void) = std::mem::transmute(*vtbl.add(3));
-            invoke(callback, result);
-        }
-    }
-    S_OK
-}
-
 // ---- SDDL ----
 
 /// Il modulo costruisce una DACL per la mappa DSO: qui non significa nulla, basta un
@@ -899,6 +811,18 @@ pub(crate) unsafe extern "win64" fn convert_sddl_w(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn processor_features() {
+        assert!(!processor_feature(0), "niente bug FDIV");
+        assert!(!processor_feature(1), "FPU non emulata");
+        assert!(processor_feature(10), "SSE2 c'è su ogni x86-64");
+        assert_eq!(processor_feature(37), is_x86_feature_detected!("sse4.1"));
+        assert_eq!(processor_feature(39), is_x86_feature_detected!("avx"));
+        assert_eq!(processor_feature(40), is_x86_feature_detected!("avx2"));
+        assert_eq!(processor_feature(41), is_x86_feature_detected!("avx512f"));
+        assert!(!processor_feature(19), "niente NEON");
+    }
 
     #[test]
     fn compare_string_ordinal_cases() {

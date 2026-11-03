@@ -134,6 +134,10 @@ impl Backend for LinuxBackend {
     }
 
     unsafe fn encode(&mut self, input: *mut EncodeInput, out: *mut f32) -> Result<()> {
+        // Il thread che elabora può non essere quello di `open` (fase 4: il thread di
+        // processing di PipeWire): senza TEB il primo gs:[0x58] del modulo va in SIGSEGV.
+        // Idempotente e senza allocazioni dopo la prima volta.
+        os_pe_loader::install_thread();
         let encode: unsafe extern "win64" fn(*mut c_void, *mut EncodeInput, *mut f32) -> i32 = unsafe { vslot(self.module, 5) };
         unsafe { check(encode(self.module, input, out), "IDAPModule2::EncodeAudioData") }
     }

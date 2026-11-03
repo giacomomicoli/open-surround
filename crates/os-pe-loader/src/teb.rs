@@ -245,27 +245,37 @@ pub fn gettid_win() -> u32 {
     unsafe { libc::gettid() as u32 }
 }
 
-/// Cleanup di fine thread: esegue le callback FLS e rilascia i blocchi TLS.
-/// `ExitThread` e la trampoline di `CreateThread` la chiamano prima di terminare.
+/// Callback FLS di fine thread (il CRT vi affida i distruttori per-thread). I valori si
+/// copiano e il contesto si rilascia prima di chiamarle: una callback che usa gli shim del
+/// thread (`SetLastError`, `FlsGetValue`, `FlsSetValue`, …) prende di nuovo `CTX`.
+/// Il TEB resta installato: lo libera `uninstall`, dopo DLL_THREAD_DETACH.
 pub fn run_thread_detach() {
-    CTX.with_borrow_mut(|ctx| {
-        let Some(c) = ctx.as_mut() else { return };
-        // Callback FLS (il CRT vi affida i distruttori per-thread).
-        let fls_values: Vec<Option<usize>> = {
-            let mut fls = c.fls.borrow_mut();
-            let vals = fls.clone();
-            fls.clear();
-            vals
-        };
-        for (idx, value) in fls_values.iter().enumerate() {
-            if let Some(v) = value {
-                if let Some(cb) = crate::shims::fls_callback(idx as u32) {
-                    let f: unsafe extern "win64" fn(*mut c_void) = unsafe { std::mem::transmute(cb) };
-                    unsafe { f(*v as usize as *mut c_void) };
-                }
+    let fls_values: Vec<Option<usize>> =
+        CTX.with_borrow(|ctx| ctx.as_ref().map(|c| std::mem::take(&mut *c.fls.borrow_mut())).unwrap_or_default());
+    for (idx, value) in fls_values.iter().enumerate() {
+        if let Some(v) = value {
+            if let Some(cb) = crate::shims::fls_callback(idx as u32) {
+                let f: unsafe extern "win64" fn(*mut c_void) = unsafe { std::mem::transmute(cb) };
+                unsafe { f(*v as *mut c_void) };
             }
         }
-    });
+    }
+}
+
+/// Ultimo passo della fine di un thread: GS azzerato e TEB liberato (vedi `Drop`). Dopo, il
+/// thread non può più eseguire codice del modulo finché non chiama di nuovo `install`.
+pub fn uninstall() {
+    let ctx = CTX.with_borrow_mut(Option::take);
+    drop(ctx);
+}
+
+impl Drop for ThreadCtx {
+    fn drop(&mut self) {
+        // Prima di liberare il TEB: un GS che punta a memoria liberata farebbe leggere al
+        // codice del modulo (o a una callback tardiva) dati a caso invece di un SIGSEGV
+        // immediato a gs:0. Vale anche per i distruttori thread-local dei thread non nostri.
+        unsafe { libc::syscall(libc::SYS_arch_prctl, ARCH_SET_GS, 0usize) };
+    }
 }
 
 pub fn sys_tls_get(idx: u32) -> Option<usize> {
@@ -324,6 +334,22 @@ pub fn com_mark_initialized() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uninstall_clears_gs() {
+        std::thread::spawn(|| {
+            super::install();
+            let mut gs: usize = 0;
+            unsafe { libc::syscall(libc::SYS_arch_prctl, 0x1004 /* ARCH_GET_GS */, &mut gs as *mut usize) };
+            assert_ne!(gs, 0);
+            super::uninstall();
+            unsafe { libc::syscall(libc::SYS_arch_prctl, 0x1004, &mut gs as *mut usize) };
+            assert_eq!(gs, 0);
+            assert!(!super::is_installed());
+        })
+        .join()
+        .unwrap();
+    }
+
     #[test]
     fn install_idempotent() {
         super::install();

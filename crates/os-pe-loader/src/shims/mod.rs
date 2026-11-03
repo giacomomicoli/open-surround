@@ -11,7 +11,8 @@ pub mod etw;
 pub mod handles;
 pub mod heap;
 mod libloader;
-mod mm;
+pub(crate) mod mm;
+mod rtwq;
 mod sync;
 pub mod winrt;
 
@@ -19,20 +20,56 @@ use crate::pe::ImportName;
 
 pub use handles::{thread_exit_code, THREADS};
 
-/// Ultimo shim mancante richiamato: stampato e poi abort (si arriva una volta sola).
-static MISSING: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// Import non implementati, per indice: ciascuno ha il proprio trampolino che passa l'indice
+/// al gestore, così il messaggio nomina proprio l'API chiamata (prima una sola variabile
+/// globale ricordava l'ultimo mancante e con due mancanti il nome era sbagliato).
+static MISSING: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 /// Shim segnaposto per un import non implementato: fallisce forte alla prima chiamata,
 /// con il nome di chi mancava, invece di un crash obscuro dentro il modulo.
 pub fn missing_stub(dll: String, name: ImportName) -> usize {
     let what = format!("{dll}!{}", name.describe());
     eprintln!("[os-pe-loader] import non implementato: {what} (abort alla prima chiamata)");
-    *MISSING.lock().unwrap() = Some(what);
-    (missing_trampoline as unsafe extern "win64" fn() -> !) as usize
+    let index = {
+        let mut m = MISSING.lock().unwrap();
+        m.push(what);
+        m.len() - 1
+    };
+    make_thunk(index, missing_handler as unsafe extern "win64" fn(usize) -> ! as usize)
 }
 
-pub(crate) unsafe extern "win64" fn missing_trampoline() -> ! {
-    let what = MISSING.lock().unwrap().clone().unwrap_or_else(|| "sconosciuto".into());
+/// Trampolino eseguibile: `mov rcx, index; mov rax, target; jmp rax` (22 byte), cioè una
+/// chiamata win64 `target(index)` al posto della funzione mancante. Le pagine si riempiono
+/// in sequenza e non si liberano (servono per la vita del modulo).
+fn make_thunk(index: usize, target: usize) -> usize {
+    const SIZE: usize = 32;
+    static PAGE: std::sync::Mutex<(usize, usize)> = std::sync::Mutex::new((0, 0)); // (base, usati)
+    let mut page = PAGE.lock().unwrap();
+    if page.0 == 0 || page.1 + SIZE > 0x1000 {
+        let p = unsafe {
+            libc::mmap(std::ptr::null_mut(), 0x1000, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
+        };
+        assert_ne!(p, libc::MAP_FAILED, "mmap del trampolino");
+        *page = (p as usize, 0);
+    }
+    let at = page.0 + page.1;
+    page.1 += SIZE;
+    let mut code = Vec::with_capacity(SIZE);
+    code.extend_from_slice(&[0x48, 0xB9]);
+    code.extend_from_slice(&(index as u64).to_le_bytes());
+    code.extend_from_slice(&[0x48, 0xB8]);
+    code.extend_from_slice(&(target as u64).to_le_bytes());
+    code.extend_from_slice(&[0xFF, 0xE0]);
+    unsafe {
+        libc::mprotect(page.0 as *mut libc::c_void, 0x1000, libc::PROT_READ | libc::PROT_WRITE);
+        std::ptr::copy_nonoverlapping(code.as_ptr(), at as *mut u8, code.len());
+        libc::mprotect(page.0 as *mut libc::c_void, 0x1000, libc::PROT_READ | libc::PROT_EXEC);
+    }
+    at
+}
+
+unsafe extern "win64" fn missing_handler(index: usize) -> ! {
+    let what = MISSING.lock().unwrap().get(index).cloned().unwrap_or_else(|| "sconosciuto".into());
     eprintln!("[os-pe-loader] chiamata a un'API non implementata: {what}");
     std::process::abort();
 }
@@ -176,8 +213,8 @@ fn resolve_any(name: &str) -> Option<usize> {
         // AVRT e RTWorkQ
         "AvSetMmThreadCharacteristicsW" => crt::av_set_mm_thread_characteristics_w as usize,
         "AvRevertMmThreadCharacteristics" => crt::av_revert_mm_thread_characteristics as usize,
-        "RtwqPutWorkItem" => crt::rtwq_put_work_item as usize,
-        "RtwqCreateAsyncResult" => crt::rtwq_create_async_result as usize,
+        "RtwqPutWorkItem" => rtwq::rtwq_put_work_item as usize,
+        "RtwqCreateAsyncResult" => rtwq::rtwq_create_async_result as usize,
 
         // il resto del CRT statico
         "GetLastError" => crt::get_last_error as usize,
@@ -248,6 +285,24 @@ fn resolve_any(name: &str) -> Option<usize> {
 
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_thunk_carries_its_own_index() {
+        unsafe extern "win64" fn echo(index: usize) -> usize {
+            index
+        }
+        let a = make_thunk(7, echo as usize);
+        let b = make_thunk(11, echo as usize);
+        let call = |t: usize| unsafe { std::mem::transmute::<usize, unsafe extern "win64" fn() -> usize>(t)() };
+        assert_eq!(call(a), 7);
+        assert_eq!(call(b), 11);
+        assert_eq!(call(a), 7, "il secondo trampolino non sovrascrive il primo");
+    }
 }
 
 // ---- TLS / FLS del sistema (TlsAlloc e compagni) ----
