@@ -146,7 +146,8 @@ stereo float32. Main options (`--help` for all of them):
 - `docs/reference/regress-linux.sh [dll] [filter]`: same replay on Linux with the native PE
   loader (`os-dap-linux`), same acceptance threshold of −130 dB residual per case.
 - `docs/reference/trace-shims.gdb`: gdb script that prints which risky Windows API shims the
-  module actually calls during a run (used to triage phase 3-bis).
+  module actually calls during a run, with arguments, return values and the calling RVA (used to
+  triage phase 3-bis; to be rerun on the phase 4 PipeWire node).
 
 The recordings in `target/verify` are large and are not part of the repository. The synthetic-signal
 cases (75 captures with their test signals) are published as a release asset:
@@ -167,8 +168,8 @@ Some `info.txt` files reference their input with an absolute Windows path; the i
 | 1 | Windows host that loads the module and renders WAV → binaural stereo, identical to Windows | done |
 | 2 | Shared core `os-dap-core` behind a backend trait | done |
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
-| 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | next |
-| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | planned |
+| 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3 |
+| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | next |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 

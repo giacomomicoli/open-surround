@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{bail, Context, Result};
@@ -24,8 +25,15 @@ pub struct Image {
     /// Directory delle risorse (offset nel file della sezione .rsrc + file intero tenuto qui).
     resource_file: Vec<u8>,
     resource_off: usize,
+    /// DllMain, per le notifiche DLL_THREAD_ATTACH/DETACH.
+    entry: usize,
+    /// False dopo DisableThreadLibraryCalls (DAP 7.3.7 la chiama nel suo DllMain).
+    thread_calls: AtomicBool,
     _mapping: Mapping,
 }
+
+pub const DLL_THREAD_ATTACH: u32 = 2;
+pub const DLL_THREAD_DETACH: u32 = 3;
 
 struct Mapping(usize, usize);
 impl Drop for Mapping {
@@ -91,10 +99,12 @@ impl Image {
                 for r in pe.relocations(&data) {
                     match r.typ {
                         10 => {
-                            let slot = image.add(r.rva as usize) as *mut u64;
-                            if !slot.is_null() {
-                                *slot = (*slot).wrapping_add(delta as u64);
+                            // Un .reloc corrotto non deve scrivere fuori dall'immagine.
+                            if r.rva as usize + 8 > size {
+                                bail!("rilocazione fuori dall'immagine: rva {:#x} (SizeOfImage {size:#x})", r.rva);
                             }
+                            let slot = image.add(r.rva as usize) as *mut u64;
+                            slot.write_unaligned(slot.read_unaligned().wrapping_add(delta as u64));
                         }
                         0 => {}
                         t => bail!("tipo di rilocazione non supportato: {t} (rva {:#x})", r.rva),
@@ -123,12 +133,12 @@ impl Image {
                 let index = teb::alloc_tls_index();
                 *(image.add(tls.address_of_index as usize) as *mut u32) = index;
                 let raw_len = tls.end_address_of_raw_data.saturating_sub(tls.start_address_of_raw_data) as usize;
-                let mut raw = vec![0u8; raw_len];
-                if raw_len > 0 {
-                    if let Some(off) = pe.rva_to_offset(&data, tls.start_address_of_raw_data) {
-                        raw.copy_from_slice(&data[off..off + raw_len]);
-                    }
+                if tls.start_address_of_raw_data as usize + raw_len > size {
+                    bail!("template TLS fuori dall'immagine");
                 }
+                // Il template si copia dall'immagine già rilocata, non dal file: con una base
+                // diversa dalla preferita i puntatori che contiene sono già corretti.
+                let raw = std::slice::from_raw_parts(image.add(tls.start_address_of_raw_data as usize), raw_len).to_vec();
                 teb::register_tls_module(teb::TlsTemplate { index, raw, zero_fill: tls.size_of_zero_fill });
                 teb::ensure_blocks_for_current_thread();
                 if !tls.callbacks.is_empty() {
@@ -142,25 +152,24 @@ impl Image {
                 if s.virtual_address == 0 {
                     continue;
                 }
-                let prot = if s.is_executable() {
-                    if s.is_writable() { libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC } else { libc::PROT_READ | libc::PROT_EXEC }
-                } else if s.is_writable() {
-                    libc::PROT_READ | libc::PROT_WRITE
-                } else {
-                    libc::PROT_READ
+                // PAGE_* equivalente, che VirtualProtect restituirà come protezione precedente.
+                let page = match (s.is_executable(), s.is_writable()) {
+                    (true, true) => 0x40,  // PAGE_EXECUTE_READWRITE
+                    (true, false) => 0x20, // PAGE_EXECUTE_READ
+                    (false, true) => 0x04, // PAGE_READWRITE
+                    (false, false) => 0x02, // PAGE_READONLY
                 };
                 let len = (s.virtual_size as usize).next_multiple_of(0x1000);
-                libc::mprotect((base + s.virtual_address as usize) as *mut c_void, len, prot);
+                let addr = base + s.virtual_address as usize;
+                if libc::mprotect(addr as *mut c_void, len, shims::mm::prot_of(page)) != 0 {
+                    bail!("mprotect della sezione a rva {:#x} fallita", s.virtual_address);
+                }
+                shims::mm::record_protection(addr, len, page);
             }
 
             // DllMain.
-            let entry = base + pe.address_of_entry_point as usize;
-            let dll_main: unsafe extern "win64" fn(*mut c_void, u32, *mut c_void) -> u32 =
-                std::mem::transmute(entry);
-            let r = dll_main(base as *mut c_void, 1 /* DLL_PROCESS_ATTACH */, std::ptr::null_mut());
-            if r == 0 {
-                bail!("DllMain(DLL_PROCESS_ATTACH) ha restituito FALSE");
-            }
+            // L'immagine va registrata prima di DllMain: DisableThreadLibraryCalls e
+            // GetModuleFileNameW (chiamate da lì) la cercano per base.
         }
 
         let exports_map = pe.exports(&data)?;
@@ -171,6 +180,7 @@ impl Image {
         let resource_off = pe
             .rva_to_offset(&data, pe.directories[pe::IMAGE_DIRECTORY_ENTRY_RESOURCE].virtual_address)
             .unwrap_or(0);
+        let entry = base + pe.address_of_entry_point as usize;
 
         let image = Arc::new(Image {
             base,
@@ -179,11 +189,34 @@ impl Image {
             exports,
             resource_file: data,
             resource_off,
+            entry,
+            thread_calls: AtomicBool::new(true),
             _mapping: Mapping(base, size),
         });
         images().lock().unwrap().push(image.clone());
+
+        let r = unsafe { image.dll_main(1 /* DLL_PROCESS_ATTACH */) };
+        if r == 0 {
+            images().lock().unwrap().retain(|i| !Arc::ptr_eq(i, &image));
+            bail!("DllMain(DLL_PROCESS_ATTACH) ha restituito FALSE");
+        }
         Ok(image)
     }
+
+    unsafe fn dll_main(&self, reason: u32) -> u32 {
+        let dll_main: unsafe extern "win64" fn(*mut c_void, u32, *mut c_void) -> u32 = unsafe { std::mem::transmute(self.entry) };
+        unsafe { dll_main(self.base as *mut c_void, reason, std::ptr::null_mut()) }
+    }
+
+    /// DisableThreadLibraryCalls.
+    pub fn disable_thread_calls(&self) {
+        self.thread_calls.store(false, Ordering::Relaxed);
+    }
+
+    pub fn thread_calls_enabled(&self) -> bool {
+        self.thread_calls.load(Ordering::Relaxed)
+    }
+
 
     /// Indirizzo di una funzione esportata.
     pub fn export(&self, name: &str) -> Option<usize> {
@@ -211,7 +244,21 @@ pub fn image_containing(addr: usize) -> Option<Arc<Image>> {
     images().lock().unwrap().iter().find(|i| addr >= i.base && addr < i.base + i.size).cloned()
 }
 
-/// L'ultimo modulo caricato (l'"HMODULE" corrente per gli shim di resource/module).
+/// DLL_THREAD_ATTACH/DETACH ai moduli che non hanno chiamato DisableThreadLibraryCalls, dal
+/// thread che nasce o finisce (CreateThread e il thread di lavoro RTWorkQ; i thread non nostri,
+/// come quello di PipeWire, non le ricevono: DAP 7.3.7 le disattiva comunque). Con `-v` si
+/// stampa quando succede, così un modulo che le vuole non passa inosservato.
+pub fn notify_thread(reason: u32) {
+    let targets: Vec<Arc<Image>> = images().lock().unwrap().iter().filter(|i| i.thread_calls_enabled()).cloned().collect();
+    for image in targets {
+        if crate::shims::etw::VERBOSE.load(Ordering::Relaxed) {
+            eprintln!("[os-pe-loader] DllMain({}) per {}", if reason == DLL_THREAD_ATTACH { "THREAD_ATTACH" } else { "THREAD_DETACH" }, image.path.display());
+        }
+        unsafe { image.dll_main(reason) };
+    }
+}
+
+/// Immagine per HMODULE (= indirizzo base).
 pub fn image_by_base(base: usize) -> Option<Arc<Image>> {
     images().lock().unwrap().iter().find(|i| i.base == base).cloned()
 }
