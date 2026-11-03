@@ -1,0 +1,71 @@
+
+=== 32ed16b6-2.bin (369 B) ===
+  output_mode: 1
+  mix_matrix: (null)
+  pregain: 0 (0.00 dB if 1/16 dB)
+  postgain: 0 (0.00 dB if 1/16 dB)
+  system_gain: 0 (0.00 dB if 1/16 dB)
+  calibration_boost: 0 (0.00 dB if 1/16 dB)
+  process_optimizer_enable: false
+  process_optimizer_config: (null)
+  surround_decoder_enable: false
+  virtualizer_headphone_late_gain: 0 (0.00 dB if 1/16 dB)
+  virtualizer_front_speaker_angle: 5
+  virtualizer_surround_speaker_angle: 5
+  virtualizer_height_speaker_angle: 5
+  surround_boost: 0 (0.00 dB if 1/16 dB)
+  mi2ieq_steering_enable: false
+  mi2dv_leveler_steering_enable: false
+  mi2dialog_enhancer_steering_enable: false
+  mi2surround_compressor_steering_enable: false
+  volume_leveler_amount: 0 (0.00 dB if 1/16 dB)
+  volume_leveler_in_target: -320 (-20.00 dB if 1/16 dB)
+  volume_leveler_out_target: -320 (-20.00 dB if 1/16 dB)
+  volume_leveler_enable: false
+  volume_modeler_calibration: 0
+  volume_modeler_enable: false
+  ieq_bands: [20] 47Hz:9.8 141Hz:10.4 234Hz:13.6 328Hz:13.6 469Hz:12.7 656Hz:11.8 844Hz:12.0 1031Hz:12.0 1313Hz:12.8 1688Hz:13.3 2250Hz:13.6 3000Hz:13.1 3750Hz:12.1 4688Hz:9.9 5813Hz:8.4 7125Hz:6.1 9000Hz:4.4 11250Hz:1.4 13875Hz:-5.6 19688Hz:-17.7
+  ieq_enable: false
+  ieq_amount: 0 (0.00 dB if 1/16 dB)
+  de_enable: false
+  de_amount: 0 (0.00 dB if 1/16 dB)
+  de_ducking: 0
+  volmax_boost: 64 (4.00 dB if 1/16 dB)
+  graphic_equalizer_enable: false
+  graphic_equalizer_config: (null)
+  audio_optimizer_enable: false
+  audio_optimizer_config: (null)
+  height_filter_mode: 0
+  bass_enhancer_enable: false
+  bass_enhancer_boost: 192 (12.00 dB if 1/16 dB)
+  bass_enhancer_cutoff_frequency: 200
+  bass_enhancer_width: 16
+  bass_extraction_enable: false
+  bass_extraction_cutoff_frequency: 200
+  regulator_tuning: (null)
+  regulator_overdrive: 0
+  regulator_timbre_preservation: 12
+  regulator_relaxation_amount: 96 (6.00 dB if 1/16 dB)
+  regulator_speaker_distortion_enable: false
+  regulator_enable: false
+  channel_count: 2
+  stereo_cp_bypass_mode: 1
+  stereo_bypass_dap_dll: false
+  volume_leveler_drc_enable: (null)
+  eyes_tracking_enable: (null)
+  speaker_virtualizer_mode: (null)
+  speaker_virtualizer_start_bin: (null)
+  volume_leveler_compressor_enable: (null)
+  output_mode_v2_deprecated: (null)
+  mi2adaptive_virtualizer_steering_enable: (null)
+  virtual_bass_mode: (null)
+  virtual_bass_src_freqs: (null)
+  virtual_bass_overall_gain: (null)
+  virtual_bass_slope_gain: (null)
+  virtual_bass_subgains: (null)
+  virtual_bass_mix_freqs: (null)
+  speaker_virtualizer_rendering_config: (null)
+  dynamic_speaker_optimization_amount: (null)
+  dynamic_speaker_optimization_speaker_interval: (null)
+  z_distance: (null)
+  -- consumed 369 of 369 bytes

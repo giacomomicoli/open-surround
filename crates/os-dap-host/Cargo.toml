@@ -1,0 +1,37 @@
+[package]
+name = "os-dap-host"
+description = "Windows backend: loads the original Dolby DAP-VR module with the system loader"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+os-dap-core = { path = "../os-dap-core" }
+anyhow = "1"
+hound = "3.5"
+windows-core = "0.62"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Devices_Properties",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Apo",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_WindowsProgramming",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Variant",
+    "Win32_System_WinRT",
+    "Win32_UI_Shell_PropertiesSystem",
+]
