@@ -18,12 +18,12 @@ use crate::com;
 const AUDIO_SIGNALPROCESSINGMODE_DEFAULT: u128 = 0xc18e2f7e_933d_4965_b7d1_1eef228d2af3;
 
 pub const IID_IDAPMODULE2: u128 = 0x2b2e53bc_651b_4a90_8f64_38531c154fda;
-/// Interfaccia ausiliaria: slot 3 = SetAPOInitParameters(APOInitSystemEffects3*).
-/// È l'IID che lo shell Microsoft (DolbyHrtfEnc) passa a QueryInterface in CDolbyHrtfEncoder
-/// quando riceve la struttura APO dal sistema (funzione a RVA […]: […],
-/// poi slot 3 con la struttura). L'IID {67B16434-…} citato dalla doc sez. 12.6 come "Aux A"
-/// è in realtà l'interfaccia delle notifiche (slot 3 = GetApoNotificationRegistrationInfo).
-pub const IID_DAP_APO_INIT: u128 = 0xb5bb3cae_fd91_497d_8b83_2eddce0808db;
+/// Interfaccia ausiliaria: slot 3 = SetAPOInitParameters(APOInitSystemEffects3*), lo stesso
+/// IID di os-dap-host. La catena di QueryInterface del modulo (RVA […]) restituisce,
+/// rispetto a IDAPModule2: b5bb3cae → +0x8 (slot 3 = GetStereoBypassAllowed, quella che lo
+/// shell usa a RVA […]), 67b16434 → +0x10 (SetAPOInitParameters), 56b0c76f → +0x18
+/// (GetApoNotificationRegistrationInfo). Verificato su Windows il 3/11/2026 (doc sez. 12.12).
+pub const IID_DAP_APO_INIT: u128 = 0x67b16434_1ef3_47bc_8d2b_f485ee148c32;
 
 /// APOInitSystemEffects3 di audioapovdd/o (il modulo legge [3] e [5]: proprietà endpoint
 /// e IMMDeviceCollection). Stessa forma di `windows::Win32::Media::Audio::Apo::…`.
@@ -100,8 +100,23 @@ impl Backend for LinuxBackend {
             check(init(module, std::ptr::null_mut(), std::ptr::null_mut()), "IDAPModule2::Initialize")?;
 
             // Interfaccia ausiliaria, slot 3: SetAPOInitParameters.
+            // Con il QueryInterface di IDAPModule2 (il suo slot 0 riporta `this` all'inizio
+            // dell'oggetto), non con quello di `inst`: fino alla fase 3-bis qui c'era `qi`, che
+            // chiamato con `module` vede l'oggetto spostato di 8 byte e risponde con
+            // l'interfaccia successiva (b5bb3cae arrivava a SetAPOInitParameters per questo).
+            let module_qi: unsafe extern "win64" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32 = vslot(module, 0);
             let mut aux: *mut c_void = std::ptr::null_mut();
-            check(qi(module, guid_bytes(IID_DAP_APO_INIT).as_ptr(), &mut aux), "QueryInterface(APO init)")?;
+            check(module_qi(module, guid_bytes(IID_DAP_APO_INIT).as_ptr(), &mut aux), "QueryInterface(APO init)")?;
+            if setup.verbose {
+                // Stessa riga di os-dap-host: atteso +0x10, vtable […], slot 3 […].
+                let vtbl = *(aux as *const *const usize);
+                eprintln!(
+                    "[qi] APO init: this{:+#x}, vtable RVA {:#x}, slot 3 RVA {:#x}",
+                    aux as isize - module as isize,
+                    vtbl as usize - image.base,
+                    *vtbl.add(3) - image.base
+                );
+            }
             let apo = ApoInitSystemEffects3 {
                 cb_size: std::mem::size_of::<ApoInitSystemEffects3>() as u32,
                 clsid: [0; 16],

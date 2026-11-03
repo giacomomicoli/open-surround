@@ -26,13 +26,12 @@ const AUDIO_SIGNALPROCESSINGMODE_DEFAULT: GUID = GUID::from_u128(0xc18e2f7e_933d
 pub const IID_IDAPMODULE2: GUID = GUID::from_u128(0x2b2e53bc_651b_4a90_8f64_38531c154fda);
 /// Interfaccia ausiliaria: slot 3 = SetAPOInitParameters(APOInitSystemEffects3*).
 ///
-/// È l'IID che usa lo shell Microsoft (DolbyHrtfEnc, RVA […]) e lo stesso del backend Linux
-/// (doc sez. 12.12, aperti ereditati). Fino alla fase 3 qui c'era 67b16434-1ef3-47bc-8d2b-
-/// f485ee148c32, che il modulo risolve in un'altra interfaccia (notifiche: slot 3 =
-/// GetApoNotificationRegistrationInfo, RVA […], contro […] di SetAPOInitParameters):
-/// con quell'IID la chiamata restituisce E_FAIL "configuration did not succeed" (provato con
-/// il loader PE sullo stesso DLL). Da riconfermare su Windows con regress-host.ps1 -Baseline.
-pub const IID_DAP_APO_INIT: GUID = GUID::from_u128(0xb5bb3cae_fd91_497d_8b83_2eddce0808db);
+/// La catena di QueryInterface del modulo (RVA […]) restituisce, rispetto a IDAPModule2:
+/// b5bb3cae → +0x8 (slot 3 = GetStereoBypassAllowed, quella che lo shell usa a RVA […]),
+/// 67b16434 → +0x10 (SetAPOInitParameters, RVA […]), 56b0c76f → +0x18
+/// (GetApoNotificationRegistrationInfo). Verificato su Windows il 3/11/2026 con -v (doc sez.
+/// 12.12): con b5bb3cae il modulo resta non configurato ("APO init context is invalid").
+pub const IID_DAP_APO_INIT: GUID = GUID::from_u128(0x67b16434_1ef3_47bc_8d2b_f485ee148c32);
 
 type FnDllGetActivationFactory = unsafe extern "system" fn(*mut c_void, *mut *mut c_void) -> HRESULT;
 type FnInitialize = unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> HRESULT;
@@ -69,7 +68,7 @@ impl Backend for WindowsBackend {
         let endpoint = stubs::make_endpoint(setup);
 
         let dll = setup.dll.canonicalize().with_context(|| format!("DLL non trovato: {}", setup.dll.display()))?;
-        let module = unsafe {
+        let (hmodule_base, module) = unsafe {
             let hmod = LoadLibraryExW(
                 &HSTRING::from(dll.as_os_str()),
                 None,
@@ -90,7 +89,7 @@ impl Backend for WindowsBackend {
             let inst = factory.ActivateInstance().context("ActivateInstance")?;
             let mut m: *mut c_void = std::ptr::null_mut();
             check(inst.query(&IID_IDAPMODULE2, &mut m), "QueryInterface(IDAPModule2)")?;
-            IUnknown::from_raw(m)
+            (hmod.0, IUnknown::from_raw(m))
         };
 
         unsafe {
@@ -101,6 +100,17 @@ impl Backend for WindowsBackend {
             // Interfaccia ausiliaria, slot 3: SetAPOInitParameters.
             let mut aux: *mut c_void = std::ptr::null_mut();
             check(module.query(&IID_DAP_APO_INIT, &mut aux), "QueryInterface(APO init)")?;
+            if setup.verbose {
+                // Stessa riga del backend Linux: atteso +0x10, vtable […], slot 3 […].
+                let base = hmodule_base as usize;
+                let vtbl = *(aux as *const *const usize);
+                eprintln!(
+                    "[qi] APO init: this{:+#x}, vtable RVA {:#x}, slot 3 RVA {:#x}",
+                    aux as isize - module.as_raw() as isize,
+                    vtbl as usize - base,
+                    *vtbl.add(3) - base
+                );
+            }
             let aux = IUnknown::from_raw(aux);
             let apo = APOInitSystemEffects3 {
                 APOInit: APOInitBaseStruct {
