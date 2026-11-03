@@ -1,0 +1,13 @@
+[package]
+name = "os-pe-loader"
+description = "Native PE32+ loader for Linux: maps a Windows DLL, resolves its imports with Rust shims, runs its TLS and DllMain"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
