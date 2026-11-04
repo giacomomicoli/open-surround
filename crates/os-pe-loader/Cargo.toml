@@ -10,4 +10,7 @@ authors.workspace = true
 
 [dependencies]
 anyhow = "1"
+
+# Il crate è vuoto fuori da Linux x86-64 (lib.rs): libc serve solo lì.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 libc = "0.2"
