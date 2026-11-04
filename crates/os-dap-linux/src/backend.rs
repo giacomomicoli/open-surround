@@ -60,6 +60,7 @@ fn check(hr: i32, what: &str) -> Result<()> {
 
 pub struct LinuxBackend {
     module: *mut c_void,
+    encoder_config: [u32; 8],
     /// Nome della classe WinRT: i dati UTF-16 devono vivere quanto l'HSTRING che passiamo.
     _class_name: HStringRef,
     _endpoint: com::Endpoint,
@@ -145,7 +146,7 @@ impl Backend for LinuxBackend {
             image.base,
             image.export_count()
         );
-        Ok(LinuxBackend { module, _class_name: class_name, _endpoint: endpoint })
+        Ok(LinuxBackend { module, encoder_config: setup.encoder_config, _class_name: class_name, _endpoint: endpoint })
     }
 
     unsafe fn encode(&mut self, input: *mut EncodeInput, out: *mut f32) -> Result<()> {
@@ -155,6 +156,18 @@ impl Backend for LinuxBackend {
         os_pe_loader::install_thread();
         let encode: unsafe extern "win64" fn(*mut c_void, *mut EncodeInput, *mut f32) -> i32 = unsafe { vslot(self.module, 5) };
         unsafe { check(encode(self.module, input, out), "IDAPModule2::EncodeAudioData") }
+    }
+
+    fn reconfigure(&mut self) -> Result<()> {
+        os_pe_loader::install_thread();
+        let cfg = &self.encoder_config;
+        unsafe {
+            let configure: unsafe extern "win64" fn(*mut c_void, *const u32, u32, *const u16) -> i32 = vslot(self.module, 4);
+            check(
+                configure(self.module, cfg.as_ptr(), std::mem::size_of_val(cfg) as u32, std::ptr::null()),
+                "IDAPModule2::ConfigureEncoder (riconfigurazione)",
+            )
+        }
     }
 }
 

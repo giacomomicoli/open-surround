@@ -57,6 +57,13 @@ pub trait Backend: Sized {
     /// `input` e i puntatori che contiene devono essere validi per un blocco di
     /// `block_frames` campioni; `out` deve avere spazio per `block_frames` × 8 float.
     unsafe fn encode(&mut self, input: *mut EncodeInput, out: *mut f32) -> Result<()>;
+
+    /// IDAPModule2::ConfigureEncoder di nuovo, con la stessa configurazione di `open`: riporta
+    /// il modulo allo stato appena configurato (filtri, leveler e smoothing azzerati), come
+    /// un'istanza nuova (fase 4, doc sez. 12.13). Serve solo al tempo reale.
+    fn reconfigure(&mut self) -> Result<()> {
+        anyhow::bail!("riconfigurazione del modulo non implementata da questo backend")
+    }
 }
 
 pub struct Engine<B: Backend> {
@@ -103,6 +110,11 @@ impl<B: Backend> Engine<B> {
 
     pub fn block_frames(&self) -> usize {
         self.block_frames
+    }
+
+    /// Riporta il modulo allo stato appena configurato: vedi [`Backend::reconfigure`].
+    pub fn reconfigure(&mut self) -> Result<()> {
+        self.backend.reconfigure()
     }
 
     /// Buffer di un ingresso statico (bed 0-16 o oggetto bypass 17-18) da riempire prima di `process`.

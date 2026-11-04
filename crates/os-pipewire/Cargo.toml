@@ -1,0 +1,19 @@
+[package]
+name = "os-pipewire"
+description = "Linux real time: PipeWire virtual sinks in front of the original Dolby DAP-VR module"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+os-dap-core = { path = "../os-dap-core" }
+anyhow = "1"
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+os-dap-linux = { path = "../os-dap-linux" }
+# v0_3_41: PW_STREAM_FLAG_TRIGGER (uscita elaborata quando gli ingressi del ciclo sono pronti).
+pipewire = { version = "0.10", features = ["v0_3_41"] }
+libc = "0.2"
