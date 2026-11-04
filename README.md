@@ -9,10 +9,10 @@ The goal is to use a Dolby Access license you already own on Linux, with every p
 setting of the Windows app (Game, Movie, Music, Voice, Custom 1-3, intelligent equalizer,
 graphic equalizer, volume leveler, virtualizer) and no audible difference.
 
-> **Status: work in progress.** Phases 0-3 of the [roadmap](#roadmap) are done and verified:
+> **Status: work in progress.** Phases 0-3 and 3-bis of the [roadmap](#roadmap) are done and verified:
 > the original module runs on Linux through a native PE loader (no Wine) and reproduces the
 > Windows output to within float32 rounding. Nothing here is usable as an everyday Linux audio
-> sink yet (that is phase 4, PipeWire).
+> sink yet: that is phase 4 (PipeWire), the next one.
 
 ## Why not reimplement the DSP?
 
@@ -169,7 +169,7 @@ Some `info.txt` files reference their input with an absolute Windows path; the i
 | 2 | Shared core `os-dap-core` behind a backend trait | done |
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
-| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | next |
+| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | next, developed on Linux (section 12.13 of the analysis; Windows only to copy over the 3 real-audio reference tracks) |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 
