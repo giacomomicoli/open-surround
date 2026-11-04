@@ -9,10 +9,15 @@ The goal is to use a Dolby Access license you already own on Linux, with every p
 setting of the Windows app (Game, Movie, Music, Voice, Custom 1-3, intelligent equalizer,
 graphic equalizer, volume leveler, virtualizer) and no audible difference.
 
-> **Status: work in progress.** Phases 0-3 and 3-bis of the [roadmap](#roadmap) are done and verified:
-> the original module runs on Linux through a native PE loader (no Wine) and reproduces the
-> Windows output to within float32 rounding. Nothing here is usable as an everyday Linux audio
-> sink yet: that is phase 4 (PipeWire), the next one.
+> **Status: work in progress.** Phases 0-3 and 3-bis of the [roadmap](#roadmap) are done and
+> verified, and the Linux part of phase 4 is done: the original module runs on Linux through a
+> native PE loader (no Wine), and a PipeWire node (`os-pipewire`) runs it in real time with a
+> virtual 7.1 sink for games and a stereo sink for regular applications, reproducing the Windows
+> output to within float32 rounding. Phase 4 still has a Windows part (build and regression of the
+> changed shared core on Windows, and the 3 real-audio reference tracks, which are only on the
+> Windows machine): step-by-step procedure at the end of section 12.13 of the analysis.
+> Profiles are still taken from captures made on Windows: the profile model and the user
+> interface are phases 5 and 6.
 
 ## Why not reimplement the DSP?
 
@@ -53,7 +58,10 @@ offline by open-surround with the same profile blobs — on Windows with the sys
 
 On Linux, all 74 saved captures replay with the same numbers as the Windows host, case by
 case (`docs/reference/regress-linux.sh`): beds and dynamics at −148.7…−149.0 dB, application
-stereo at −134.0…−147.4 dB, estimated gain 0.000 dB everywhere.
+stereo at −134.0…−147.4 dB, estimated gain 0.000 dB everywhere. The same 74 cases played through
+PipeWire into the real-time node and recorded from its output give the same residuals, case by
+case (`docs/reference/verify-pipewire.sh`); the node adds no latency beyond the module's own
+512 frames (10.7 ms).
 
 The estimated gain difference is 0.000 dB in every case. Details, including the Windows gain
 chain (−3 dB → Dolby → endpoint volume) and how application stereo differs from game beds, are
@@ -68,11 +76,15 @@ crates/
 │   ├─ abi.rs       in-memory structures read by EncodeAudioData (ObjectEntry, GranuleMeta, …)
 │   ├─ props.rs     profile blobs from captures, endpoint properties
 │   ├─ engine.rs    ModuleSetup, the Backend trait, Engine (buffers, metadata, block processing)
+│   ├─ options.rs   module options shared by the offline renderer and the PipeWire node
+│   ├─ realtime.rs  Streamer: graph cycles of any length → fixed module blocks, sessions, volume
 │   └─ offline.rs   command line and WAV → WAV rendering, identical on every platform
 ├─ os-dap-host/    Windows backend: system loader, IAT hooks, in-memory COM objects
 ├─ os-pe-loader/   native PE32+ loader for Linux: sections, relocations, imports, TLS, DllMain,
 │                  synthetic TEB/PEB + GS base, Rust shims of the imported Windows APIs
 ├─ os-dap-linux/   Linux backend: same COM sequence as the Windows shell, on top of the loader
+├─ os-pipewire/    Linux real time: PipeWire node (two virtual sinks → module → binaural output)
+│                  and os-pw-latency (latency measured inside the graph)
 └─ os-verify/      reference tools: ref-capture (Windows recording) and wavcmp (comparison)
 docs/
 ├─ analisi-dolby-access.md   full analysis: interface reconstruction, blob format, verification (Italian)
@@ -98,6 +110,9 @@ pub trait Backend: Sized {
   never will be.
 - Profile blobs: the values Dolby Access writes for an audio endpoint, captured with
   `docs/reference/capture_asar.ps1` or `ref-capture` on Windows.
+- For real time on Linux: PipeWire (developed with 1.6) with the `libpipewire-0.3` and
+  `libspa-0.2` headers, and libclang for the bindings; `pw-play`, `pw-record`, `wpctl` for the
+  verification script.
 - For verification: ffmpeg (test signals) and a Windows machine with Dolby Access and an
   endpoint with Dolby Atmos for Headphones enabled.
 
@@ -135,6 +150,38 @@ stereo float32. Main options (`--help` for all of them):
 | `--dll <file>` | path to `DolbyAudioProcessing.dll` |
 | `-v` | trace the module's calls into the host and print its internal log |
 
+### Real time on Linux (PipeWire)
+
+`os-pipewire` takes the same module options and creates two virtual sinks in front of the
+module plus a binaural stereo output, all in one PipeWire node group:
+
+```
+cargo build --release
+target/release/os-pipewire --capture docs/reference/captures/<profile> \
+    --dll /path/to/DolbyAudioProcessing.dll
+```
+
+| Node | Role |
+|---|---|
+| `open-surround-7.1` (`--channels 12`: `open-surround-7.1.4`) | games: the channels go to the module's beds with −3 dB, like a spatial audio client on Windows |
+| `open-surround-stereo` | regular applications: the two bypass objects at 0 dB, like a plain WASAPI stream on Windows |
+| `open-surround-output` | binaural output, linked to the default device or to `--target <node>` |
+
+Both sinks feed the same `EncodeAudioData` call in the same graph cycle, as on Windows. Their
+volume (one value shared by the two sinks, like a Windows endpoint) is applied after the module,
+where Windows applies the endpoint volume; the signal entering the module is never scaled. Make
+`open-surround-stereo` the default sink and send games to `open-surround-7.1` (for example
+`PULSE_SINK=open-surround-7.1 %command%` in Steam). PipeWire upmixes stereo streams played
+into the 7.1 sink unless the client sets `channelmix.upmix = false`.
+
+The module is only called while a sink receives audio, and after `--idle-ms` (default 2000) of
+silence on both sinks it is reconfigured, so each listening session starts from a clean module
+state like on Windows (the volume leveler remembers what it processed). The node adds no latency
+when the graph quantum is a multiple of 256 frames (256, 512, 1024…) and less than 256 frames
+otherwise; the module itself delays the signal by 512 frames (10.7 ms). Both are announced to
+the graph (`ProcessLatency`), so players can compensate. `os-pw-latency` measures what the node
+adds inside the graph. Other options: `--help`.
+
 ## Verification workflow
 
 - `docs/reference/verify-profile.ps1 -Name <profile>`: with the profile selected in Dolby Access,
@@ -145,9 +192,19 @@ stereo float32. Main options (`--help` for all of them):
   against another build byte for byte. This is the acceptance test for every later phase.
 - `docs/reference/regress-linux.sh [dll] [filter]`: same replay on Linux with the native PE
   loader (`os-dap-linux`), same acceptance threshold of −130 dB residual per case.
+- `QUANTUM=<n> docs/reference/regress-linux.sh`: the same replay through the real-time adapter
+  in cycles of n frames (`--quantum`); the outputs must stay byte-identical to the baseline
+  (`docs/reference/regress-linux-baseline.sha256`).
+- `docs/reference/verify-pipewire.sh [dll] [filter]`: the phase 4 acceptance test. For every
+  saved capture it starts `os-pipewire` on a private null sink, plays the test signal into the
+  right sink with `pw-play`, records the node's output with `pw-record` and compares it with the
+  Windows loopback (same −130 dB threshold). `LATENCY=<n>` asks the graph for another quantum.
 - `docs/reference/trace-shims.gdb`: gdb script that prints which risky Windows API shims the
   module actually calls during a run, with arguments, return values and the calling RVA (used to
-  triage phase 3-bis; to be rerun on the phase 4 PipeWire node).
+  triage phase 3-bis); `docs/reference/trace-node.sh` runs it on the live PipeWire node with a
+  fixed scenario (both sinks at once, volume and mute changes, end of session, second session).
+- `os-pw-latency`: measures, inside the PipeWire graph, the latency the node adds (impulses into a
+  sink, detected on the monitor of the sink the node plays to).
 
 The recordings in `target/verify` are large and are not part of the repository. The synthetic-signal
 cases (75 captures with their test signals) are published as a release asset:
@@ -169,12 +226,12 @@ Some `info.txt` files reference their input with an absolute Windows path; the i
 | 2 | Shared core `os-dap-core` behind a backend trait | done |
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
-| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | next, developed on Linux (section 12.13 of the analysis; Windows only to copy over the 3 real-audio reference tracks) |
+| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | Linux part done: `os-pipewire`; all 74 cases recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB), volume after the module, the node adds only the module's 512 frames of latency. Remaining, on Windows: build and `regress-host.ps1` with the changed shared core, export of the 3 real-audio tracks, then their check on Linux (procedure at the end of section 12.13) |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 
 Acceptance for phases 3-4: the same inputs and blobs give a residual of about −149 dB against the
-Windows recordings in every configuration.
+Windows recordings in every configuration (−134…−147 dB for application stereo, as on Windows).
 
 ## Legal
 

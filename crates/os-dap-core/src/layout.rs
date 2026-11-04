@@ -6,6 +6,11 @@ use anyhow::{bail, Result};
 /// Il modulo lavora solo a 48 kHz.
 pub const SAMPLE_RATE: u32 = 48_000;
 
+/// Ritardo algoritmico del modulo: il picco della risposta a un impulso esce 512 frame dopo
+/// (10,67 ms), in ogni profilo, su bed e bypass e con blocchi di 256, 512 o 1024 frame
+/// (misurato offline il 4/11/2026, doc sez. 12.13).
+pub const MODULE_DELAY_FRAMES: usize = 512;
+
 /// Canali "bed" statici, nell'ordine di AudioObjectType di Windows Spatial Audio.
 pub const NUM_BEDS: usize = 17;
 pub const NUM_BYPASS: usize = 2;

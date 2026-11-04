@@ -12,3 +12,6 @@ authors.workspace = true
 os-dap-core = { path = "../os-dap-core" }
 os-pe-loader = { path = "../os-pe-loader" }
 anyhow = "1"
+
+[dev-dependencies]
+hound = "3.5"
