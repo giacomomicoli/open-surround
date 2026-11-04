@@ -3,18 +3,10 @@
 //! catena di guadagno, elaborazione WAV) è nel nucleo comune `os-dap-core`, identico a
 //! Windows. Opzioni: `os-dap-linux --help` (vedi os_dap_core::offline).
 
-// Le vtable COM elencano funzioni come indirizzi: è il meccanismo stesso di una vtable.
-#![allow(function_casts_as_integer)]
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod backend;
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-mod com;
-
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() -> anyhow::Result<()> {
     let args = os_dap_core::offline::Args::from_env()?;
-    os_dap_core::offline::run::<backend::LinuxBackend>(&args)
+    os_dap_core::offline::run::<os_dap_linux::LinuxBackend>(&args)
 }
 
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
