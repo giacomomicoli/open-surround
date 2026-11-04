@@ -4,7 +4,10 @@
 //! stima il guadagno relativo ai minimi quadrati e riporta il residuo per canale, sia con
 //! guadagno unitario sia con quello stimato. Residuo esattamente zero = bit-identico.
 //!
-//! Uso: wavcmp [--max-lag-ms N] [--segments S] [--residual F] <riferimento.wav> <prova.wav>
+//! Uso: wavcmp [--max-lag-ms N] [--onset] [--segments S] [--residual F] <riferimento.wav> <prova.wav>
+//!   --onset        pre-allinea sull'attacco (primo campione sopra −60 dB dal picco) e cerca il
+//!                  ritardo fine attorno a quello: per registrazioni che iniziano in un momento
+//!                  qualsiasi (nodo PipeWire, fase 4)
 //!   --segments S   ripete la stima di guadagno e residuo su segmenti di S secondi
 //!   --residual F   scrive in F il residuo allineato (rif - guadagno stimato · prova)
 
@@ -36,24 +39,34 @@ fn rms(x: impl Iterator<Item = f64>) -> f64 {
     (s / n.max(1) as f64).sqrt()
 }
 
-/// Ritardo `lag` tale che prova[i] ≈ rif[i + lag]; cerca in [-max, max].
-fn best_lag(reference: &[f32], test: &[f32], max: isize) -> (isize, f64) {
-    // Finestra centrata sulla parte più energetica della prova, per ridurre i costi.
-    let win = (test.len() / 2).min(5 * 48_000);
-    let start = {
-        let block = 4800;
-        (0..test.len().saturating_sub(win) / block)
-            .max_by(|&a, &b| {
-                let e = |k: usize| test[k * block..k * block + block].iter().map(|v| v * v).sum::<f32>();
-                e(a).total_cmp(&e(b))
-            })
-            .unwrap_or(0)
-            * block
-    };
+/// Primo campione sopra −60 dB dal picco del canale.
+fn onset(x: &[f32]) -> usize {
+    let peak = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    x.iter().position(|v| v.abs() > peak * 1e-3).unwrap_or(0)
+}
+
+/// Ritardo `lag` tale che prova[i] ≈ rif[i + lag]; cerca in [center - max, center + max].
+fn best_lag(reference: &[f32], test: &[f32], center: isize, max: isize) -> (isize, f64) {
+    // Finestra sulla parte più energetica della prova, per ridurre i costi, scelta fra quelle
+    // che restano dentro il riferimento per tutti i ritardi cercati (altrimenti i ritardi
+    // vicini a quello giusto verrebbero scartati).
+    let win = (test.len() / 2).min(reference.len() / 2).min(5 * 48_000);
+    let block = 4800;
+    let lo = (max - center).max(0) as usize;
+    let hi = (reference.len() as isize - win as isize - center - max).min(test.len() as isize - win as isize);
+    let (lo, hi) = if hi >= lo as isize { (lo, hi as usize) } else { (0, test.len().saturating_sub(win)) };
+    let start = (lo / block..=hi / block)
+        .filter(|k| k * block >= lo && k * block <= hi)
+        .max_by(|&a, &b| {
+            let e = |k: usize| test[k * block..k * block + block].iter().map(|v| v * v).sum::<f32>();
+            e(a).total_cmp(&e(b))
+        })
+        .unwrap_or(lo)
+        * block;
     let seg = &test[start..start + win];
     let norm_t = seg.iter().map(|v| (*v as f64).powi(2)).sum::<f64>().sqrt();
     let mut best = (0isize, f64::MIN);
-    for lag in -max..=max {
+    for lag in center - max..=center + max {
         let off = start as isize + lag;
         if off < 0 || off as usize + win > reference.len() {
             continue;
@@ -76,6 +89,8 @@ fn main() -> Result<()> {
         max_lag_ms = args.get(i + 1).context("manca il valore di --max-lag-ms")?.parse()?;
         args.drain(i..=i + 1);
     }
+    let align_onset = args.iter().any(|a| a == "--onset");
+    args.retain(|a| a != "--onset");
     let mut segment = None;
     if let Some(i) = args.iter().position(|a| a == "--segments") {
         segment = Some(args.get(i + 1).context("manca il valore di --segments")?.parse::<f64>()?);
@@ -95,7 +110,8 @@ fn main() -> Result<()> {
     }
     let ch = rc.min(tc);
     let max = (max_lag_ms * rr as f64 / 1000.0) as isize;
-    let (lag, corr) = best_lag(&reference[0], &test[0], max);
+    let center = if align_onset { onset(&reference[0]) as isize - onset(&test[0]) as isize } else { 0 };
+    let (lag, corr) = best_lag(&reference[0], &test[0], center, max);
     println!(
         "ritardo: {lag} campioni ({:.2} ms, rif. rispetto a prova), correlazione {corr:.6}",
         lag as f64 * 1000.0 / rr as f64
