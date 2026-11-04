@@ -218,6 +218,14 @@ tar -xzf verify-data.tar.gz -C target
 Some `info.txt` files reference their input with an absolute Windows path; the input files are in
 `target/verify/signals/`.
 
+The 3 real-audio cases (an excerpt of a Dolby Atmos test track, 5.1, 194 s; Movie Balanced, Game
+performance, Custom 1 without virtualizer) contain non-redistributable material and are not
+published anywhere. They live on the Windows capture machine and travel to Linux by hand as
+`verify-reale.tar.gz` (exported with step W3 of section 12.13; the SHA-256 is written there). It
+is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three folders
+`target/verify/reale-real-*`, each with its own copy of the input, and checked with the filter
+`reale-` of `regress-linux.sh` and `verify-pipewire.sh` (steps L1-L3).
+
 ## Roadmap
 
 | Phase | Goal | Status |
