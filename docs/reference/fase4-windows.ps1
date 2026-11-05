@@ -85,10 +85,11 @@ function Start-Trace([string]$Name) {
 function Stop-Trace([string]$Etl) {
     logman stop dolby-apo -ets | Out-Null
     $ev = @(Get-WinEvent -Path $Etl -Oldest -ErrorAction SilentlyContinue)
-    $ev | Select-Object @{n = 'ora'; e = { $_.TimeCreated.ToString('HH:mm:ss.fff') } }, ProcessId,
-    @{n = 'Message'; e = { if ($_.Message) { $_.Message } else { ($_.Properties | ForEach-Object { $_.Value }) -join ' ' } } } |
-        Export-Csv ($Etl -replace '\.etl$', '.csv') -NoTypeInformation -Encoding UTF8
-    tracerpt $Etl -o ($Etl -replace '\.etl$', '.xml') -of XML -y 2>&1 | Out-Null
+    # Il modulo scrive con EventWriteString: Get-WinEvent non ne formatta il testo, tracerpt sì
+    # (in <Data>); etw-dolby-csv.ps1 ne fa il CSV (ora, pid, tid, messaggio).
+    $xml = $Etl -replace '\.etl$', '.xml'
+    tracerpt $Etl -o $xml -of XML -y 2>&1 | Out-Null
+    & (Join-Path $PSScriptRoot "etw-dolby-csv.ps1") $xml | Out-Null
     $adg = @(Get-Process audiodg -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
     $inAdg = @($ev | Where-Object { $adg -contains $_.ProcessId }).Count
     Write-Host "  traccia $(Split-Path $Etl -Leaf): $($ev.Count) eventi, $inAdg da audiodg (pid $($adg -join ','))"
@@ -120,7 +121,7 @@ switch ($Step) {
             logman query providers -pid $p | Tee-Object (Join-Path $out "provider-audiodg.txt")
         } else {
             "  prime righe:"
-            Import-Csv ($etl -replace '\.etl$', '.csv') | Select-Object -First 15 | Format-Table -AutoSize | Out-String -Width 250
+            Import-Csv ($etl -replace '\.etl$', '.csv') | Select-Object -First 15 | ForEach-Object { "  $($_.ora) $($_.messaggio)" }
         }
     }
     "sessioni" {

@@ -14,11 +14,13 @@ graphic equalizer, volume leveler, virtualizer) and no audible difference.
 > loader (no Wine), and a PipeWire node (`os-pipewire`) runs it in real time with a virtual 7.1
 > sink for games and a stereo sink for regular applications, reproducing the Windows output to
 > within float32 rounding, on the synthetic test signals and on 194 s of real 5.1 audio alike,
-> with graph quanta of 1024 and 480 frames. Phase 4 stays open for three behaviours that are not
-> matched yet: what Windows does on a profile change during playback, when it starts the module
-> afresh between listening sessions (both need new reference recordings on Windows), and
-> automatic routing of games and applications to the right sink. The resume point, with the
-> exact steps, is section 12.13 of the analysis, "Punto di ripresa".
+> with graph quanta of 1024 and 480 frames. Phase 4 stays open for three behaviours that the node
+> does not match yet: a profile change during playback, a fresh module for each listening session,
+> and automatic routing of games and applications to the right sink. What Windows does in the first
+> two cases is now measured with an ETW trace of the real module, and the reference recordings are
+> made: it creates a new module for every stream, whatever the pause, and applies a profile change
+> to the running module through `HandleNotification`, keeping its state. The resume point, with the
+> exact steps (on Linux), is section 12.13 of the analysis, "Punto di ripresa".
 > Profiles are still taken from captures made on Windows: the profile model and the user
 > interface are phases 5 and 6.
 
@@ -197,6 +199,10 @@ The node adds no latency when the graph quantum is a multiple of 256 frames (256
 - `docs/reference/regress-host.ps1 [-Baseline <exe>]`: replays every saved capture in
   `target/verify` without Dolby Access, compares against the Windows loopback and optionally
   against another build byte for byte. This is the acceptance test for every later phase.
+- `docs/reference/fase4-windows.ps1 -Step controllo|sessioni|cambio` (administrator PowerShell):
+  records sessions separated by pauses and live profile changes with `ref-capture` while an ETW
+  session collects the log of the real Dolby module inside `audiodg`
+  (`docs/reference/etw-dolby-csv.ps1` turns the trace into CSV); outputs in `target/verify-fase4`.
 - `docs/reference/regress-linux.sh [dll] [filter]`: same replay on Linux with the native PE
   loader (`os-dap-linux`), same acceptance threshold of −130 dB residual per case.
 - `QUANTUM=<n> docs/reference/regress-linux.sh`: the same replay through the real-time adapter
@@ -245,7 +251,7 @@ is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three fol
 | 2 | Shared core `os-dap-core` behind a backend trait | done |
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
-| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | in progress: `os-pipewire`; all 74 cases recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB), volume after the module, the node adds only the module's 512 frames of latency. Windows part done on 2026-11-05: build and tests green, `regress-host.ps1` 78/78 identical to the baseline, the 3 real-audio tracks exported. Linux checks done on 2026-11-05: the 3 real-audio tracks give −148.8 dB on Linux offline, through the real-time adapter and from the PipeWire node, whose output is bit-identical to the offline render; with the graph forced to 480 frames all 77 cases are bit-identical to the offline render. Remaining: Windows references for a profile change during playback and for two sessions separated by a pause, with an ETW trace of the real module, then their use in the node, and automatic routing (section 12.13, "Punto di ripresa") |
+| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | in progress: `os-pipewire`; all 74 cases recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB), volume after the module, the node adds only the module's 512 frames of latency. Windows part done on 2026-11-05: build and tests green, `regress-host.ps1` 78/78 identical to the baseline, the 3 real-audio tracks exported. Linux checks done on 2026-11-05: the 3 real-audio tracks give −148.8 dB on Linux offline, through the real-time adapter and from the PipeWire node, whose output is bit-identical to the offline render; with the graph forced to 480 frames all 77 cases are bit-identical to the offline render. Windows references done on 2026-11-05 (W5-W9), with an ETW trace of the real module: without a loopback capture Windows creates a fresh module for every stream, whatever the pause; a profile change reaches the same instance through `HandleNotification`, without a reset, re-applying only the runtime parameters. Remaining, on Linux: sessions and live profile changes in the node, and automatic routing (section 12.13, "Punto di ripresa") |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 
