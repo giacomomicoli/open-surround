@@ -13,9 +13,10 @@ graphic equalizer, volume leveler, virtualizer) and no audible difference.
 > verified, and the Linux part of phase 4 is done: the original module runs on Linux through a
 > native PE loader (no Wine), and a PipeWire node (`os-pipewire`) runs it in real time with a
 > virtual 7.1 sink for games and a stereo sink for regular applications, reproducing the Windows
-> output to within float32 rounding. Phase 4 still has a Windows part (build and regression of the
-> changed shared core on Windows, and the 3 real-audio reference tracks, which are only on the
-> Windows machine): step-by-step procedure at the end of section 12.13 of the analysis.
+> output to within float32 rounding. The Windows part of phase 4 is done too (build and tests
+> green, Windows regression 78/78 identical to the baseline, the 3 real-audio reference tracks
+> exported): what is left is checking those 3 tracks on Linux, steps L1-L3 at the end of section
+> 12.13 of the analysis.
 > Profiles are still taken from captures made on Windows: the profile model and the user
 > interface are phases 5 and 6.
 
@@ -217,6 +218,14 @@ tar -xzf verify-data.tar.gz -C target
 Some `info.txt` files reference their input with an absolute Windows path; the input files are in
 `target/verify/signals/`.
 
+The 3 real-audio cases (an excerpt of a Dolby Atmos test track, 5.1, 194 s; Movie Balanced, Game
+performance, Custom 1 without virtualizer) contain non-redistributable material and are not
+published anywhere. They live on the Windows capture machine and travel to Linux by hand as
+`verify-reale.tar.gz` (exported with step W3 of section 12.13; the SHA-256 is written there). It
+is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three folders
+`target/verify/reale-real-*`, each with its own copy of the input, and checked with the filter
+`reale-` of `regress-linux.sh` and `verify-pipewire.sh` (steps L1-L3).
+
 ## Roadmap
 
 | Phase | Goal | Status |
@@ -226,7 +235,7 @@ Some `info.txt` files reference their input with an absolute Windows path; the i
 | 2 | Shared core `os-dap-core` behind a backend trait | done |
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
-| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | Linux part done: `os-pipewire`; all 74 cases recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB), volume after the module, the node adds only the module's 512 frames of latency. Remaining, on Windows: build and `regress-host.ps1` with the changed shared core, export of the 3 real-audio tracks, then their check on Linux (procedure at the end of section 12.13) |
+| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | Linux part done: `os-pipewire`; all 74 cases recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB), volume after the module, the node adds only the module's 512 frames of latency. Windows part done on 2026-11-05: build and tests green, `regress-host.ps1` 78/78 identical to the baseline, the 3 real-audio tracks exported. Remaining: their check on Linux (steps L1-L3 at the end of section 12.13) |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 
