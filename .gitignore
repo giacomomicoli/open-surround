@@ -1,3 +1,4 @@
 /target/
 /.vs/
 *.wav
+/verify-*.tar.gz
