@@ -9,14 +9,16 @@ The goal is to use a Dolby Access license you already own on Linux, with every p
 setting of the Windows app (Game, Movie, Music, Voice, Custom 1-3, intelligent equalizer,
 graphic equalizer, volume leveler, virtualizer) and no audible difference.
 
-> **Status: work in progress.** Phases 0-3 and 3-bis of the [roadmap](#roadmap) are done and
-> verified, and the Linux part of phase 4 is done: the original module runs on Linux through a
-> native PE loader (no Wine), and a PipeWire node (`os-pipewire`) runs it in real time with a
-> virtual 7.1 sink for games and a stereo sink for regular applications, reproducing the Windows
-> output to within float32 rounding. The Windows part of phase 4 is done too (build and tests
-> green, Windows regression 78/78 identical to the baseline, the 3 real-audio reference tracks
-> exported): what is left is checking those 3 tracks on Linux, steps L1-L3 at the end of section
-> 12.13 of the analysis.
+> **Status: work in progress.** Phases 0-3 and 3-bis of the [roadmap](#roadmap) are done, and
+> all the verification of phase 4 is done: the original module runs on Linux through a native PE
+> loader (no Wine), and a PipeWire node (`os-pipewire`) runs it in real time with a virtual 7.1
+> sink for games and a stereo sink for regular applications, reproducing the Windows output to
+> within float32 rounding, on the synthetic test signals and on 194 s of real 5.1 audio alike,
+> with graph quanta of 1024 and 480 frames. Phase 4 stays open for three behaviours that are not
+> matched yet: what Windows does on a profile change during playback, when it starts the module
+> afresh between listening sessions (both need new reference recordings on Windows), and
+> automatic routing of games and applications to the right sink. The resume point, with the
+> exact steps, is section 12.13 of the analysis, "Punto di ripresa".
 > Profiles are still taken from captures made on Windows: the profile model and the user
 > interface are phases 5 and 6.
 
@@ -61,8 +63,10 @@ On Linux, all 74 saved captures replay with the same numbers as the Windows host
 case (`docs/reference/regress-linux.sh`): beds and dynamics at −148.7…−149.0 dB, application
 stereo at −134.0…−147.4 dB, estimated gain 0.000 dB everywhere. The same 74 cases played through
 PipeWire into the real-time node and recorded from its output give the same residuals, case by
-case (`docs/reference/verify-pipewire.sh`); the node adds no latency beyond the module's own
-512 frames (10.7 ms).
+case (`docs/reference/verify-pipewire.sh`), and so do the 3 real-audio tracks; the node adds no
+latency beyond the module's own 512 frames (10.7 ms). The node's recorded output is
+bit-identical to the offline render, with the default graph quantum of 1024 frames and with the
+graph forced to 480 frames.
 
 The estimated gain difference is 0.000 dB in every case. Details, including the Windows gain
 chain (−3 dB → Dolby → endpoint volume) and how application stereo differs from game beds, are
@@ -177,11 +181,13 @@ into the 7.1 sink unless the client sets `channelmix.upmix = false`.
 
 The module is only called while a sink receives audio, and after `--idle-ms` (default 2000) of
 silence on both sinks it is reconfigured, so each listening session starts from a clean module
-state like on Windows (the volume leveler remembers what it processed). The node adds no latency
-when the graph quantum is a multiple of 256 frames (256, 512, 1024…) and less than 256 frames
-otherwise; the module itself delays the signal by 512 frames (10.7 ms). Both are announced to
-the graph (`ProcessLatency`), so players can compensate. `os-pw-latency` measures what the node
-adds inside the graph. Other options: `--help`.
+state, as the Windows reference recordings do (the volume leveler remembers what it processed).
+The 2 s are a choice, not a measurement: when exactly Windows starts the module afresh is one of
+the open points of phase 4. Changing profile means restarting the node with other captures.
+The node adds no latency when the graph quantum is a multiple of 256 frames (256, 512,
+1024…) and less than 256 frames otherwise; the module itself delays the signal by 512 frames
+(10.7 ms). Both are announced to the graph (`ProcessLatency`), so players can compensate.
+`os-pw-latency` measures what the node adds inside the graph. Other options: `--help`.
 
 ## Verification workflow
 
@@ -199,7 +205,11 @@ adds inside the graph. Other options: `--help`.
 - `docs/reference/verify-pipewire.sh [dll] [filter]`: the phase 4 acceptance test. For every
   saved capture it starts `os-pipewire` on a private null sink, plays the test signal into the
   right sink with `pw-play`, records the node's output with `pw-record` and compares it with the
-  Windows loopback (same −130 dB threshold). `LATENCY=<n>` asks the graph for another quantum.
+  Windows loopback (same −130 dB threshold). `LATENCY=<n>` asks the graph for another quantum
+  (on a machine with a higher `clock.min-quantum`, force it with `pw-metadata -n settings 0
+  clock.force-quantum <n>` and set it back to 0 afterwards). The recording goes to memory
+  (`$XDG_RUNTIME_DIR`) first: written straight to disk at 480 frames, `pw-record` dropped whole
+  cycles on long tracks.
 - `docs/reference/trace-shims.gdb`: gdb script that prints which risky Windows API shims the
   module actually calls during a run, with arguments, return values and the calling RVA (used to
   triage phase 3-bis); `docs/reference/trace-node.sh` runs it on the live PipeWire node with a
@@ -235,7 +245,7 @@ is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three fol
 | 2 | Shared core `os-dap-core` behind a backend trait | done |
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
-| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | Linux part done: `os-pipewire`; all 74 cases recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB), volume after the module, the node adds only the module's 512 frames of latency. Windows part done on 2026-11-05: build and tests green, `regress-host.ps1` 78/78 identical to the baseline, the 3 real-audio tracks exported. Remaining: their check on Linux (steps L1-L3 at the end of section 12.13) |
+| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | in progress: `os-pipewire`; all 74 cases recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB), volume after the module, the node adds only the module's 512 frames of latency. Windows part done on 2026-11-05: build and tests green, `regress-host.ps1` 78/78 identical to the baseline, the 3 real-audio tracks exported. Linux checks done on 2026-11-05: the 3 real-audio tracks give −148.8 dB on Linux offline, through the real-time adapter and from the PipeWire node, whose output is bit-identical to the offline render; with the graph forced to 480 frames all 77 cases are bit-identical to the offline render. Remaining: Windows references for a profile change during playback and for two sessions separated by a pause, with an ETW trace of the real module, then their use in the node, and automatic routing (section 12.13, "Punto di ripresa") |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 

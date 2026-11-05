@@ -27,6 +27,11 @@ NODE=target/debug/os-pipewire
 WAVCMP=target/debug/wavcmp
 PREFIX=os-verify
 NULL=os-verify-null
+# pw-record scrive il file dal callback del grafo: con quantum 480 (10 ms per ciclo) e il file su
+# disco la registrazione dei brani di 194 s perdeva quanti interi (salti di 480/960 campioni,
+# uscita del nodo intatta; doc 12.13, "Quantum 480 nel grafo vero"). Si registra in memoria
+# (tmpfs) e si sposta il file alla fine.
+REC="${XDG_RUNTIME_DIR:-/dev/shm}/os-verify-node.wav"
 
 for tool in pw-play pw-record pw-cli pw-dump wpctl ffmpeg ffprobe python3; do
     command -v "$tool" > /dev/null || { echo "manca $tool"; exit 1; }
@@ -68,6 +73,7 @@ cleanup() {
     [ -n "$node_pid" ] && stop "$node_pid"
     id=$(node_id "$NULL")
     [ -n "$id" ] && pw-cli destroy "$id" > /dev/null 2>&1
+    rm -f "$REC"
 }
 trap cleanup EXIT
 
@@ -164,7 +170,7 @@ for dir in "$VERIFY"/*/ "$VERIFY"/*/*/; do
     # Il registratore tiene in moto il null sink, e quindi il nodo: il modulo elabora silenzio
     # prima del segnale, come l'offline (che parte con il secondo di silenzio del segnale).
     pw-record --target "$NULL" -P '{ stream.capture.sink = true }' --format f32 --rate 48000 \
-        --channels 2 "$out/node.wav" > "$out/record.log" 2>&1 &
+        --channels 2 "$REC" > "$out/record.log" 2>&1 &
     rec_pid=$!
     sleep 1
     # Upmix disattivato: uno stereo nel sink 7.1 deve restare FL/FR (bed, come un gioco su Windows).
@@ -172,6 +178,7 @@ for dir in "$VERIFY"/*/ "$VERIFY"/*/*/; do
     sleep 1
     stop "$rec_pid"
     stop "$node_pid"; node_pid=""
+    mv "$REC" "$out/node.wav"
 
     "$WAVCMP" --onset --segments 3 "$dir/loopback.wav" "$out/node.wav" > "$out/wavcmp.txt" 2>&1
     gain=$(grep -oP 'guadagno stimato \K[-+]?[0-9.]+(?= dB)' "$out/wavcmp.txt" | tail -1)
