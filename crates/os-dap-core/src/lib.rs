@@ -18,4 +18,4 @@ pub mod realtime;
 pub use engine::{Backend, Engine, ModuleSetup};
 pub use layout::Mode;
 pub use props::{Guid, PropKey, Value};
-pub use realtime::{Source, Streamer};
+pub use realtime::{Change, Source, Streamer};

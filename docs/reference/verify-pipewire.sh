@@ -14,6 +14,7 @@
 #     DLL            DolbyAudioProcessing.dll (default ~/Documenti/dolby-bins/…)
 #     filtro-profilo elabora solo le cartelle il cui nome contiene la stringa
 #   LATENCY=<n> …    chiede al grafo un quantum di n frame (node.latency, es. 480 o 256)
+#   NODE_ARGS="…" …  argomenti in più per os-pipewire (es. --no-route)
 
 set -u
 cd "$(dirname "$0")/../.."
@@ -21,6 +22,7 @@ cd "$(dirname "$0")/../.."
 DLL="${1:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
 FILTER="${2:-}"
 LATENCY="${LATENCY:-}"
+NODE_ARGS="${NODE_ARGS:-}"
 VERIFY=target/verify
 OUT=target/verify-pipewire
 NODE=target/debug/os-pipewire
@@ -151,6 +153,8 @@ for dir in "$VERIFY"/*/ "$VERIFY"/*/*/; do
     rm -f "$out/node.wav"
     extra=()
     [ -n "$LATENCY" ] && extra+=(--latency "$LATENCY")
+    # shellcheck disable=SC2206
+    [ -n "$NODE_ARGS" ] && extra+=($NODE_ARGS)
     "$NODE" --capture "$dir" --dll "$DLL" --name "$PREFIX" --target "$NULL" --volume-db "$volume" \
         "${extra[@]}" -v > "$out/node.log" 2>&1 &
     node_pid=$!
