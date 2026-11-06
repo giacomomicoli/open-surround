@@ -26,6 +26,11 @@
 //!                        cicli di n frame, come il nodo PipeWire; l'uscita, tolta la latenza
 //!                        dell'adattatore, deve essere identica byte per byte a quella senza
 //!     --tail-ms <n>      silenzio aggiunto in coda per svuotare i filtri (default 500)
+//!     --change <f>:<dir> cambio di profilo a caldo, come Dolby Access su Windows: dal primo
+//!                        blocco che inizia al frame f o dopo, i blob della cartella <dir>
+//!                        sostituiscono quelli del property store e il modulo riceve le
+//!                        notifiche di Windows (HandleNotification, stessa istanza, doc 12.13
+//!                        L5); ripetibile, in ordine di frame
 //!     -v                 traccia le chiamate del modulo agli oggetti dell'host
 //!                        e mostra il log interno del modulo
 
@@ -36,7 +41,8 @@ use anyhow::{bail, Context, Result};
 use crate::engine::{Backend, Engine};
 use crate::layout::{db_to_gain, Routing, OUT_CHANNELS, SAMPLE_RATE};
 use crate::options::ModuleOptions;
-use crate::realtime::{Source, Streamer};
+use crate::props::PROFILE_CHANGE_KEYS;
+use crate::realtime::{Change, Source, Streamer};
 
 pub struct Args {
     pub input: PathBuf,
@@ -47,6 +53,7 @@ pub struct Args {
     pub stereo_bypass: bool,
     pub gain_db: Option<f32>,
     pub volume_db: f32,
+    pub changes: Vec<(usize, PathBuf)>,
 }
 
 pub fn usage() -> String {
@@ -71,6 +78,7 @@ impl Args {
         let mut stereo_bypass = false;
         let mut gain_db = None;
         let mut volume_db = 0.0f32;
+        let mut changes = Vec::new();
         let mut it = args.into_iter();
         while let Some(a) = it.next() {
             let mut val = || it.next().with_context(|| format!("manca il valore di {a}"));
@@ -83,6 +91,11 @@ impl Args {
                 "--tail-ms" => tail_ms = val()?.parse()?,
                 "--gain-db" => gain_db = Some(val()?.parse()?),
                 "--volume-db" => volume_db = val()?.parse()?,
+                "--change" => {
+                    let v = val()?;
+                    let (f, dir) = v.split_once(':').with_context(|| format!("--change {v}: serve <frame>:<cartella>"))?;
+                    changes.push((f.parse::<usize>().with_context(|| format!("--change {v}: frame"))?, PathBuf::from(dir)));
+                }
                 "-h" | "--help" => {
                     eprintln!("{}", usage());
                     std::process::exit(0);
@@ -93,7 +106,8 @@ impl Args {
         }
         let [input, output] = <[PathBuf; 2]>::try_from(positional)
             .map_err(|_| anyhow::anyhow!("servono <ingresso.wav> e <uscita.wav> (vedi --help)"))?;
-        Ok(Args { input, output, module, quantum, tail_ms, stereo_bypass, gain_db, volume_db })
+        changes.sort_by_key(|c| c.0);
+        Ok(Args { input, output, module, quantum, tail_ms, stereo_bypass, gain_db, volume_db, changes })
     }
 }
 
@@ -125,6 +139,13 @@ pub fn run<B: Backend>(args: &Args) -> Result<()> {
     let mut engine = args.module.open::<B>()?;
     eprintln!("modulo DAP configurato ({:?}, blocco {} frame, {} canali in ingresso)", args.module.mode, args.module.block, in_ch);
 
+    let mut changes = Vec::new();
+    for (frame, dir) in &args.changes {
+        let values = args.module.blobs.with_capture(dir.clone()).fx_values(args.module.mode)?;
+        changes.push((*frame, Change { values, notify: PROFILE_CHANGE_KEYS.to_vec(), at: Some(*frame as u64) }));
+    }
+    let mut changes = changes.into_iter().peekable();
+
     let frames_in = input.len() / in_ch;
     let tail = (args.tail_ms as usize * SAMPLE_RATE as usize) / 1000;
     let total = frames_in + tail;
@@ -139,6 +160,10 @@ pub fn run<B: Backend>(args: &Args) -> Result<()> {
             let mut out = Vec::with_capacity(total.div_ceil(block) * block * OUT_CHANNELS);
             let mut pos = 0;
             while pos < total {
+                while let Some((_, c)) = changes.next_if(|c| c.0 <= pos) {
+                    eprintln!("cambio di profilo al frame {pos}");
+                    engine.change_properties(&c.values, &c.notify)?;
+                }
                 for (c, &b) in routing.map.iter().enumerate() {
                     let buf = engine.input_mut(b);
                     for (i, s) in buf.iter_mut().enumerate() {
@@ -154,7 +179,7 @@ pub fn run<B: Backend>(args: &Args) -> Result<()> {
             }
             out
         }
-        Some(q) => stream(engine, &input, in_ch, &routing, total.div_ceil(block) * block, q, volume)?,
+        Some(q) => stream(engine, &input, in_ch, &routing, total.div_ceil(block) * block, q, volume, changes.collect())?,
     };
 
     let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs()));
@@ -179,10 +204,24 @@ pub fn run<B: Backend>(args: &Args) -> Result<()> {
 
 /// Lo stesso render attraverso [`Streamer`], a cicli di `quantum` frame come nel nodo PipeWire:
 /// restituisce `frames` frame interleaved, tolti gli zeri della latenza dell'adattatore.
-fn stream<B: Backend>(engine: Engine<B>, input: &[f32], in_ch: usize, routing: &Routing, frames: usize, quantum: usize, volume: f32) -> Result<Vec<f32>> {
+/// I cambi di profilo passano dallo Streamer come nel nodo, con il loro frame della sessione.
+#[allow(clippy::too_many_arguments)]
+fn stream<B: Backend>(
+    engine: Engine<B>,
+    input: &[f32],
+    in_ch: usize,
+    routing: &Routing,
+    frames: usize,
+    quantum: usize,
+    volume: f32,
+    changes: Vec<(usize, Change)>,
+) -> Result<Vec<f32>> {
     let frames_in = input.len() / in_ch;
     let planar: Vec<Vec<f32>> = (0..in_ch).map(|c| input.iter().skip(c).step_by(in_ch).copied().collect()).collect();
     let mut streamer = Streamer::new(engine, quantum);
+    for (_, c) in changes {
+        streamer.change_properties(c)?;
+    }
     let (mut left, mut right) = (vec![0.0f32; quantum], vec![0.0f32; quantum]);
     let mut out = Vec::with_capacity((frames + quantum) * OUT_CHANNELS);
     let mut pos = 0;
