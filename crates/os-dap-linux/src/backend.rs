@@ -7,7 +7,7 @@ use std::ffi::c_void;
 
 use anyhow::{bail, Context, Result};
 use os_dap_core::abi::EncodeInput;
-use os_dap_core::{Backend, ModuleSetup};
+use os_dap_core::{Backend, ModuleSetup, PropKey, Value};
 use os_pe_loader::shims::com::guid_bytes;
 use os_pe_loader::shims::winrt::HStringRef;
 use os_pe_loader::Image;
@@ -24,6 +24,39 @@ pub const IID_IDAPMODULE2: u128 = 0x2b2e53bc_651b_4a90_8f64_38531c154fda;
 /// shell usa a RVA […]), 67b16434 → +0x10 (SetAPOInitParameters), 56b0c76f → +0x18
 /// (GetApoNotificationRegistrationInfo). Verificato su Windows il 3/11/2026 (doc sez. 12.12).
 pub const IID_DAP_APO_INIT: u128 = 0x67b16434_1ef3_47bc_8d2b_f485ee148c32;
+/// Notifiche, IDAPModule2 + 0x18: la stessa forma di IAudioProcessingObjectNotifications
+/// (slot 3 GetApoNotificationRegistrationInfo, slot 4 HandleNotification). Lo shell la conserva
+/// dopo SetAPOInitParameters e le passa le notifiche di Windows così come arrivano
+/// (DolbyHrtfEnc.dll, FUN_… e FUN_…; doc sez. 12.13, L5).
+pub const IID_DAP_NOTIFICATIONS: u128 = 0x56b0c76f_02fd_4b21_a52e_9f8219fc86e4;
+
+/// APO_NOTIFICATION_TYPE_SYSTEM_EFFECTS_PROPERTY_CHANGE e AUDIO_SYSTEMEFFECTS_PROPERTYSTORE_TYPE_USER
+/// (audioenginebaseapo.h, mmdeviceapi.h).
+const APO_NOTIFICATION_TYPE_SYSTEM_EFFECTS_PROPERTY_CHANGE: u32 = 3;
+const AUDIO_SYSTEMEFFECTS_PROPERTYSTORE_TYPE_USER: u32 = 1;
+
+/// APO_NOTIFICATION con il ramo AUDIO_SYSTEMEFFECTS_PROPERTY_CHANGE_NOTIFICATION dell'unione.
+#[repr(C)]
+struct ApoNotification {
+    kind: u32, // +0
+    endpoint: usize, // +8, IMMDevice*
+    context: [u8; 16], // +16, propertyStoreContext
+    store_type: u32, // +32
+    store: usize, // +40, IPropertyStore*
+    key_fmtid: [u8; 16], // +48, PROPERTYKEY
+    key_pid: u32, // +64
+}
+const _: () = assert!(std::mem::size_of::<ApoNotification>() == 72);
+
+/// APO_NOTIFICATION_DESCRIPTOR (ramo AUDIO_SYSTEMEFFECTS_PROPERTY_CHANGE_APO_NOTIFICATION_DESCRIPTOR).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ApoNotificationDescriptor {
+    kind: u32,
+    device: usize,
+    context: [u8; 16],
+}
+const _: () = assert!(std::mem::size_of::<ApoNotificationDescriptor>() == 32);
 
 /// APOInitSystemEffects3 di audioapovdd/o (il modulo legge [3] e [5]: proprietà endpoint
 /// e IMMDeviceCollection). Stessa forma di `windows::Win32::Media::Audio::Apo::…`.
@@ -60,6 +93,10 @@ fn check(hr: i32, what: &str) -> Result<()> {
 
 pub struct LinuxBackend {
     module: *mut c_void,
+    /// Interfaccia delle notifiche (IID_DAP_NOTIFICATIONS) e contesto del property store per
+    /// cui il modulo si è registrato.
+    notifications: *mut c_void,
+    fx_context: Option<[u8; 16]>,
     encoder_config: [u32; 8],
     /// Nome della classe WinRT: i dati UTF-16 devono vivere quanto l'HSTRING che passiamo.
     _class_name: HStringRef,
@@ -141,12 +178,47 @@ impl Backend for LinuxBackend {
             )?;
         }
 
+        // Come lo shell dopo ConfigureEncoder (traccia ETW, doc 12.13 W6): le notifiche per cui
+        // il modulo si registra. Il cambio di profilo a caldo le userà.
+        let mut notifications: *mut c_void = std::ptr::null_mut();
+        let mut fx_context = None;
+        unsafe {
+            let module_qi: unsafe extern "win64" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32 = vslot(module, 0);
+            check(module_qi(module, guid_bytes(IID_DAP_NOTIFICATIONS).as_ptr(), &mut notifications), "QueryInterface(notifiche)")?;
+            let get_info: unsafe extern "win64" fn(*mut c_void, *mut *mut ApoNotificationDescriptor, *mut u32) -> i32 = vslot(notifications, 3);
+            let mut list: *mut ApoNotificationDescriptor = std::ptr::null_mut();
+            let mut count = 0u32;
+            check(get_info(notifications, &mut list, &mut count), "GetApoNotificationRegistrationInfo")?;
+            // L'array è del modulo (CoTaskMemAlloc): resta allocato, come gli altri oggetti COM.
+            for i in 0..count as usize {
+                let d = *list.add(i);
+                if setup.verbose {
+                    eprintln!(
+                        "[notifiche] registrazione {i}: tipo {}, dispositivo {}, contesto {{{:?}}}",
+                        d.kind,
+                        if d.device == endpoint.device { "il nostro" } else if d.device == 0 { "nessuno" } else { "altro" },
+                        os_dap_core::Guid(os_pe_loader::shims::com::guid_from_bytes(&d.context))
+                    );
+                }
+                if d.kind == APO_NOTIFICATION_TYPE_SYSTEM_EFFECTS_PROPERTY_CHANGE {
+                    fx_context = Some(d.context);
+                }
+            }
+        }
+
         eprintln!(
             "modulo DAP caricato con il loader PE: base {:#x}, {} export",
             image.base,
             image.export_count()
         );
-        Ok(LinuxBackend { module, encoder_config: setup.encoder_config, _class_name: class_name, _endpoint: endpoint })
+        Ok(LinuxBackend {
+            module,
+            notifications,
+            fx_context,
+            encoder_config: setup.encoder_config,
+            _class_name: class_name,
+            _endpoint: endpoint,
+        })
     }
 
     unsafe fn encode(&mut self, input: *mut EncodeInput, out: *mut f32) -> Result<()> {
@@ -156,6 +228,28 @@ impl Backend for LinuxBackend {
         os_pe_loader::install_thread();
         let encode: unsafe extern "win64" fn(*mut c_void, *mut EncodeInput, *mut f32) -> i32 = unsafe { vslot(self.module, 5) };
         unsafe { check(encode(self.module, input, out), "IDAPModule2::EncodeAudioData") }
+    }
+
+    fn change_properties(&mut self, values: &[(PropKey, Value)], notify: &[PropKey]) -> Result<()> {
+        let Some(context) = self.fx_context else {
+            bail!("il modulo non si è registrato per le notifiche del property store FX");
+        };
+        os_pe_loader::install_thread();
+        self._endpoint.set_user_values(values);
+        let handle: unsafe extern "win64" fn(*mut c_void, *const ApoNotification) = unsafe { vslot(self.notifications, 4) };
+        for key in notify {
+            let n = ApoNotification {
+                kind: APO_NOTIFICATION_TYPE_SYSTEM_EFFECTS_PROPERTY_CHANGE,
+                endpoint: self._endpoint.device,
+                context,
+                store_type: AUDIO_SYSTEMEFFECTS_PROPERTYSTORE_TYPE_USER,
+                store: self._endpoint.user,
+                key_fmtid: guid_bytes(key.fmtid.0),
+                key_pid: key.pid,
+            };
+            unsafe { handle(self.notifications, &n) };
+        }
+        Ok(())
     }
 
     fn reconfigure(&mut self) -> Result<()> {

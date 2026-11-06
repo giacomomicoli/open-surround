@@ -26,6 +26,21 @@ use anyhow::Result;
 
 use crate::engine::{Backend, Engine};
 use crate::layout::{Routing, NUM_STATIC, OUT_CHANNELS};
+use crate::props::{PropKey, Value};
+
+/// Cambio di profilo a caldo (doc sez. 12.13, L5): valori nuovi del property store FX e chiavi
+/// da notificare al modulo, vedi [`crate::Backend::change_properties`].
+pub struct Change {
+    pub values: Vec<(PropKey, Value)>,
+    pub notify: Vec<PropKey>,
+    /// Frame della sessione (dal primo frame elaborato dopo che il modulo era fermo) dal quale
+    /// vale il cambio: consegnato prima del primo blocco che inizia lì o dopo. None: prima del
+    /// prossimo blocco. Serve alla verifica, per riprodurre un cambio registrato su Windows.
+    pub at: Option<u64>,
+}
+
+/// Cambi in attesa al massimo: la coda è allocata in [`Streamer::new`].
+const MAX_PENDING: usize = 8;
 
 /// Un flusso d'ingresso in un ciclo: i suoi canali planari, nell'ordine di `routing.map`.
 /// I campioni oltre la lunghezza di un canale valgono zero. Sorgenti diverse devono usare
@@ -55,6 +70,11 @@ pub struct Streamer<B: Backend> {
     silent: usize,
     idle_after: Option<usize>,
     resets: u64,
+    /// Cambi di profilo da consegnare al modulo, in ordine di arrivo.
+    pending: Vec<Change>,
+    changes: u64,
+    /// Frame della sessione al primo frame del blocco in costruzione.
+    block_start: u64,
 }
 
 impl<B: Backend> Streamer<B> {
@@ -77,6 +97,9 @@ impl<B: Backend> Streamer<B> {
             silent: 0,
             idle_after: None,
             resets: 0,
+            pending: Vec::with_capacity(MAX_PENDING),
+            changes: 0,
+            block_start: 0,
         }
     }
 
@@ -94,6 +117,73 @@ impl<B: Backend> Streamer<B> {
     /// Riconfigurazioni fatte dopo un periodo senza sorgenti.
     pub fn resets(&self) -> u64 {
         self.resets
+    }
+
+    /// Cambi di profilo consegnati al modulo.
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
+    /// Cambio di profilo a caldo, come su Windows: stessa istanza, nessuna riconfigurazione.
+    /// Con il modulo in moto è consegnato fra due blocchi, prima di elaborare quello in
+    /// costruzione (il modulo non è rientrante), o prima del blocco di `change.at`; da fermo, se
+    /// non ha un frame, subito, e vale anche per le sessioni successive. Con la coda piena
+    /// sostituisce l'ultimo cambio in attesa. Restituisce il cambio consegnato o scartato, da
+    /// liberare (se serve) fuori dal thread real time.
+    pub fn change_properties(&mut self, change: Change) -> Result<Option<Change>> {
+        if self.idle && change.at.is_none() && self.pending.is_empty() {
+            self.engine.change_properties(&change.values, &change.notify)?;
+            self.changes += 1;
+            return Ok(Some(change));
+        }
+        if self.pending.len() == MAX_PENDING {
+            let old = self.pending.pop();
+            self.pending.push(change);
+            return Ok(old);
+        }
+        self.pending.push(change);
+        Ok(None)
+    }
+
+    /// Fine della sessione (l'ultimo flusso si è chiuso): come Windows, che distrugge il modulo
+    /// al rilascio del flusso e ne crea uno nuovo al successivo (doc sez. 12.13, W6), il modulo
+    /// viene riconfigurato subito e resta fermo fino alla prossima sorgente. Si perdono il
+    /// blocco in costruzione e la coda dentro il modulo (il suo ritardo di 512 frame), come su
+    /// Windows; l'uscita già prodotta e in attesa nell'adattatore esce normalmente. I cambi in
+    /// attesa con un frame della sessione sono scartati.
+    pub fn end_session(&mut self) -> Result<()> {
+        if self.idle {
+            return Ok(());
+        }
+        self.engine.reconfigure()?;
+        self.resets += 1;
+        // Il blocco in costruzione non uscirà mai dal modulo: al suo posto zeri, così la
+        // latenza resta quella fissata al primo ciclo.
+        let partial = self.filled;
+        self.go_idle();
+        self.enqueue_zeros(partial);
+        self.pending.retain(|c| c.at.is_none());
+        Ok(())
+    }
+
+    fn go_idle(&mut self) {
+        self.idle = true;
+        self.silent = 0;
+        self.filled = 0;
+        self.written = [0; NUM_STATIC];
+        self.block_start = 0;
+    }
+
+    /// Consegna i cambi dovuti prima del blocco in costruzione.
+    fn deliver_changes(&mut self) -> Result<()> {
+        while let Some(i) = self.pending.iter().position(|c| c.at.is_none_or(|at| at <= self.block_start)) {
+            let c = self.pending.remove(i);
+            self.engine.change_properties(&c.values, &c.notify)?;
+            self.changes += 1;
+            // Liberato qui: un cambio di profilo è un evento raro.
+            drop(c);
+        }
+        Ok(())
     }
 
     pub fn engine_mut(&mut self) -> &mut Engine<B> {
@@ -189,7 +279,9 @@ impl<B: Backend> Streamer<B> {
                     }
                     *w = 0;
                 }
+                self.deliver_changes()?;
                 let out = self.engine.process(&active)?;
+                self.block_start += block as u64;
                 let cap = self.ring.len() / OUT_CHANNELS;
                 debug_assert!(self.queued + block <= cap);
                 let mut tail = (self.head + self.queued) % cap;
@@ -202,8 +294,8 @@ impl<B: Backend> Streamer<B> {
                 if self.idle_after.is_some_and(|after| self.silent >= after) {
                     self.engine.reconfigure()?;
                     self.resets += 1;
-                    self.idle = true;
-                    self.silent = 0;
+                    self.go_idle();
+                    self.pending.retain(|c| c.at.is_none());
                     self.enqueue_zeros(frames - pos);
                     return Ok(());
                 }
@@ -265,11 +357,13 @@ mod tests {
         last: f32,
         blocks: u32,
         frames: usize,
+        /// Per ogni cambio di profilo: blocchi già elaborati e numero di chiavi notificate.
+        changes: Vec<(u32, usize)>,
     }
 
     impl Backend for Mock {
         fn open(setup: &ModuleSetup) -> Result<Self> {
-            Ok(Mock { last: 0.0, blocks: 0, frames: setup.block_frames() })
+            Ok(Mock { last: 0.0, blocks: 0, frames: setup.block_frames(), changes: Vec::new() })
         }
 
         unsafe fn encode(&mut self, input: *mut EncodeInput, out: *mut f32) -> Result<()> {
@@ -291,6 +385,15 @@ mod tests {
             self.blocks = 0;
             Ok(())
         }
+
+        fn change_properties(&mut self, _values: &[(PropKey, Value)], notify: &[PropKey]) -> Result<()> {
+            self.changes.push((self.blocks, notify.len()));
+            Ok(())
+        }
+    }
+
+    fn change(at: Option<u64>, keys: usize) -> Change {
+        Change { values: Vec::new(), notify: crate::props::PROFILE_CHANGE_KEYS[..keys].to_vec(), at }
     }
 
     fn engine(block: usize) -> Engine<Mock> {
@@ -468,5 +571,63 @@ mod tests {
         assert_eq!(cycle(&mut s, false), (0.0, 0.0, true));
         assert_eq!(s.resets(), 1);
         assert_eq!(cycle(&mut s, true), first);
+    }
+
+    #[test]
+    fn cambio_di_profilo_al_blocco_del_frame_dato() {
+        // Con cicli di 480 frame e blocchi di 256: un cambio "dal frame 1000" va consegnato prima
+        // del blocco 4 (inizia a 1024), uno senza frame prima del blocco in costruzione.
+        let rg = Routing::new(2, false, None).unwrap();
+        let mut s = Streamer::new(engine(256), 1024);
+        // Da fermo: senza frame subito, con il frame resta in attesa.
+        assert!(s.change_properties(change(None, 1)).unwrap().is_some());
+        assert!(s.change_properties(change(Some(1000), 2)).unwrap().is_none());
+        let ones = vec![1.0f32; 480];
+        let chans: Vec<&[f32]> = vec![&ones, &ones];
+        let src = [Source { routing: &rg, channels: &chans }];
+        let (mut l, mut r) = (vec![0.0; 480], vec![0.0; 480]);
+        for k in 0..6 {
+            if k == 4 {
+                // Ciclo 4 (frame 1920-2400): il blocco in costruzione è il 7 (1792-2048).
+                assert!(s.change_properties(change(None, 3)).unwrap().is_none());
+            }
+            s.process(480, &src, 1.0, [&mut l, &mut r]).unwrap();
+        }
+        assert_eq!(s.engine_mut().backend().changes, vec![(0, 1), (4, 2), (7, 3)]);
+        assert_eq!(s.changes(), 3);
+    }
+
+    #[test]
+    fn fine_della_sessione_riconfigura_subito() {
+        // Alla fine della sessione il modulo è riconfigurato e fermo anche a metà blocco; la
+        // sessione successiva riparte da un blocco nuovo come la prima, e un cambio con il frame
+        // della sessione chiusa viene scartato.
+        let rg = Routing::new(2, false, None).unwrap();
+        let mut s = Streamer::new(engine(256), 1024);
+        let ones = vec![1.0f32; 384];
+        let chans: Vec<&[f32]> = vec![&ones, &ones];
+        let src = [Source { routing: &rg, channels: &chans }];
+        let cycle = |s: &mut Streamer<Mock>, n: usize, present: bool| {
+            let (mut l, mut r) = (vec![0.0; n], vec![0.0; n]);
+            s.process(n, if present { &src } else { &[] }, 1.0, [&mut l, &mut r]).unwrap();
+            (l, r)
+        };
+        let first = cycle(&mut s, 384, true);
+        s.change_properties(change(Some(100_000), 1)).unwrap();
+        s.end_session().unwrap();
+        assert!(s.is_idle());
+        assert_eq!(s.resets(), 1);
+        // Da fermo nessuna chiamata: al posto dei 128 frame del blocco scartato escono zeri, e
+        // la latenza (128 con cicli di 384) non cambia.
+        let (l, r) = cycle(&mut s, 384, false);
+        assert!(l.iter().chain(&r).all(|&v| v == 0.0));
+        assert_eq!(s.latency(), 128);
+        assert_eq!(cycle(&mut s, 384, true), first);
+        assert_eq!(s.latency(), 128);
+        assert!(s.engine_mut().backend().changes.is_empty());
+        // Fermo: una seconda fine di sessione non fa niente.
+        s.end_session().unwrap();
+        s.end_session().unwrap();
+        assert_eq!(s.resets(), 2);
     }
 }

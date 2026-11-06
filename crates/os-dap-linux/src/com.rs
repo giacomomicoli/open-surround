@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use os_dap_core::{ModuleSetup, PropKey, Value};
 
@@ -125,18 +126,25 @@ struct PropStore {
     vtbl: *const u8,
     header: ComObjHeader,
     name: &'static str,
-    values: HashMap<(u128, u32), Value>,
+    /// Con un lock: il cambio di profilo a caldo li sostituisce mentre il modulo li conserva.
+    values: Mutex<HashMap<(u128, u32), Value>>,
+}
+
+impl PropStore {
+    fn values(&self) -> std::sync::MutexGuard<'_, HashMap<(u128, u32), Value>> {
+        self.values.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 unsafe extern "win64" fn ps_get_count(this: *mut c_void, count: *mut u32) -> i32 {
     let s = prop_store(this);
-    unsafe { *count = s.values.len() as u32 };
+    unsafe { *count = s.values().len() as u32 };
     S_OK
 }
 
 unsafe extern "win64" fn ps_get_at(this: *mut c_void, i: u32, key: *mut u8) -> i32 {
     let s = prop_store(this);
-    let Some((fmtid, pid)) = s.values.keys().nth(i as usize).copied() else {
+    let Some((fmtid, pid)) = s.values().keys().nth(i as usize).copied() else {
         return E_POINTER;
     };
     unsafe {
@@ -153,7 +161,7 @@ unsafe extern "win64" fn ps_get_value(this: *mut c_void, key: *const u8, pv: *mu
     }
     let fmtid = iid_from_bytes(unsafe { &*(key as *const [u8; 16]) });
     let pid = unsafe { *(key.add(16) as *const u32) };
-    match s.values.get(&(fmtid, pid)) {
+    match s.values().get(&(fmtid, pid)) {
         Some(v) => {
             trace!("{}: GetValue {} -> presente", s.name, key_str(fmtid, pid));
             unsafe { write_propvariant(pv, v) };
@@ -213,7 +221,7 @@ fn leak_prop_store(name: &'static str, values: Vec<(PropKey, Value)>) -> *mut Pr
         vtbl: std::ptr::addr_of!(PROPERTYSTORE_VTABLE) as *const u8,
         header: ComObjHeader { iids: &[IID_IPROPERTYSTORE] },
         name,
-        values: map,
+        values: Mutex::new(map),
     }))
 }
 
@@ -402,6 +410,22 @@ static COLLECTION_VTABLE: ImmDeviceCollectionVtbl = ImmDeviceCollectionVtbl {
 pub struct Endpoint {
     pub endpoint_props: usize,
     pub collection: usize,
+    /// IMMDevice e IPropertyStore "user" del contesto FX: servono alle notifiche di cambio di
+    /// proprietà (fase 4, cambio di profilo a caldo).
+    pub device: usize,
+    pub user: usize,
+}
+
+impl Endpoint {
+    /// Sostituisce o aggiunge valori nel property store "user", come Dolby Access quando scrive
+    /// nel registro un profilo nuovo. Il modulo li rilegge quando riceve la notifica.
+    pub fn set_user_values(&self, values: &[(PropKey, Value)]) {
+        let store = unsafe { &*(self.user as *const PropStore) };
+        let mut map = store.values();
+        for (k, v) in values {
+            map.insert((k.fmtid.0, k.pid), v.clone());
+        }
+    }
 }
 
 pub fn make_endpoint(setup: &ModuleSetup) -> Endpoint {
@@ -424,7 +448,7 @@ pub fn make_endpoint(setup: &ModuleSetup) -> Endpoint {
         header: ComObjHeader { iids: &[IID_IMMDEVICECOLLECTION] },
         device,
     }));
-    Endpoint { endpoint_props: endpoint_props as usize, collection: collection as usize }
+    Endpoint { endpoint_props: endpoint_props as usize, collection: collection as usize, device: device as usize, user: user as usize }
 }
 
 #[cfg(test)]

@@ -15,9 +15,16 @@
 //! PipeWire, esteso a due ingressi; l'uscita gira nello stesso ciclo degli ingressi, quindi il
 //! nodo non aggiunge latenza oltre a quella dell'adattatore a blocchi fissi.
 //!
-//! Sessioni: il modulo ha memoria (leveler), e su Windows ogni sessione parte da un modulo nuovo.
-//! Lo Streamer non lo chiama finché i sink non ricevono audio (buffer senza `SPA_CHUNK_FLAG_EMPTY`)
-//! e, dopo `--idle-ms` senza audio, lo riconfigura e lo ferma di nuovo (os_dap_core::realtime).
+//! Sessioni: il modulo ha memoria (leveler), e Windows lo distrugge appena l'ultimo flusso
+//! dell'endpoint viene rilasciato e ne crea uno nuovo al flusso successivo, qualunque sia la
+//! pausa (traccia ETW, doc sez. 12.13 W6). Qui l'ultimo flusso che si chiude è l'ultimo
+//! collegamento ai due sink che sparisce dal registro di PipeWire: il thread principale lo vede e
+//! il ciclo successivo riconfigura il modulo e lo ferma (`Streamer::end_session`). Lo Streamer non
+//! lo chiama finché i sink non ricevono audio (buffer senza `SPA_CHUNK_FLAG_EMPTY`).
+//!
+//! Cambio di profilo a caldo: con `--control <fifo>` il nodo legge comandi `profilo <cartella>
+//! [frame <n>]`; il thread principale legge i blob e il ciclo successivo li consegna al modulo
+//! sulla stessa istanza, con le notifiche di Windows (`HandleNotification`, doc sez. 12.13 W8).
 //!
 //! Volume: i sink annunciano il volume impostato dall'utente (`channelVolumes`) ma lasciano il
 //! segnale intatto (`softVolumes` = 1, come fa filter-chain con `capture.volumes`); il nodo lo
@@ -25,14 +32,18 @@
 //! Dolby → volume). I due sink condividono un solo volume, come un endpoint Windows.
 
 use std::cell::{RefCell, UnsafeCell};
+use std::collections::HashMap;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use os_dap_core::layout::{db_to_gain, Routing, MODULE_DELAY_FRAMES, SAMPLE_RATE};
-use os_dap_core::{Source, Streamer};
+use os_dap_core::layout::{db_to_gain, Mode, Routing, MODULE_DELAY_FRAMES, SAMPLE_RATE};
+use os_dap_core::props::{BlobSource, PROFILE_CHANGE_KEYS};
+use os_dap_core::{Change, Source, Streamer};
 use os_dap_linux::LinuxBackend;
 use pipewire as pw;
 use pw::spa;
@@ -93,6 +104,8 @@ struct Rt {
     streamer: Streamer<LinuxBackend>,
     routes: [Routing; 2],
     channels: [usize; 2],
+    /// Ultima fine di sessione già eseguita (confronto con `Shared::sessions_ended`).
+    ended: u64,
 }
 
 #[derive(Default)]
@@ -106,6 +119,7 @@ struct Stats {
     trigger_failed: AtomicU64,
     max_process_ns: AtomicU64,
     resets: AtomicU64,
+    changes: AtomicU64,
     idle: std::sync::atomic::AtomicBool,
 }
 
@@ -121,6 +135,10 @@ struct Shared {
     /// Guadagno dopo il modulo (f32): volume dei sink × --volume-db.
     volume: AtomicU32,
     latency: AtomicUsize,
+    /// Sessioni finite (l'ultimo collegamento ai sink è sparito), contate dal thread principale.
+    sessions_ended: AtomicU64,
+    /// Cambi di profilo pronti, dal thread principale al real time (che non aspetta il lock).
+    control: std::sync::Mutex<Vec<Change>>,
     stats: Stats,
 }
 
@@ -213,6 +231,20 @@ impl Shared {
     unsafe fn render(&self, out: *mut pw_sys::pw_buffer, inb: &[*mut pw_sys::pw_buffer; 2]) {
         // SAFETY: vedi `Shared`: solo questo callback usa `rt`.
         let rt = unsafe { &mut *self.rt.get() };
+        let ended = self.sessions_ended.load(Ordering::Acquire);
+        if ended != rt.ended {
+            rt.ended = ended;
+            if rt.streamer.end_session().is_err() {
+                self.stats.errors.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        if let Ok(mut queue) = self.control.try_lock() {
+            for c in queue.drain(..) {
+                if rt.streamer.change_properties(c).is_err() {
+                    self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
         let (sb, requested) = unsafe { ((*out).buffer, (*out).requested as usize) };
         let datas = unsafe { std::slice::from_raw_parts_mut((*sb).datas, (*sb).n_datas as usize) };
         if datas.len() < 2 || datas.iter().any(|d| d.data.is_null()) {
@@ -276,6 +308,7 @@ impl Shared {
         }
         self.latency.store(rt.streamer.latency(), Ordering::Relaxed);
         self.stats.resets.store(rt.streamer.resets(), Ordering::Relaxed);
+        self.stats.changes.store(rt.streamer.changes(), Ordering::Relaxed);
         self.stats.idle.store(rt.streamer.is_idle(), Ordering::Relaxed);
         for d in datas.iter_mut().take(2) {
             let chunk = unsafe { &mut *d.chunk };
@@ -447,7 +480,7 @@ pub fn run(args: Args) -> Result<()> {
         streamer.set_idle_reset(Some(args.idle_ms as usize * SAMPLE_RATE as usize / 1000));
     }
     let shared = Arc::new(Shared {
-        rt: UnsafeCell::new(Rt { streamer, routes, channels }),
+        rt: UnsafeCell::new(Rt { streamer, routes, channels, ended: 0 }),
         captures: Default::default(),
         playback: AtomicPtr::new(std::ptr::null_mut()),
         position: Default::default(),
@@ -455,6 +488,8 @@ pub fn run(args: Args) -> Result<()> {
         triggered: AtomicU64::new(0),
         volume: AtomicU32::new(fixed.to_bits()),
         latency: AtomicUsize::new(0),
+        sessions_ended: AtomicU64::new(0),
+        control: std::sync::Mutex::new(Vec::with_capacity(8)),
         stats: Stats::default(),
     });
 
@@ -560,6 +595,73 @@ pub fn run(args: Args) -> Result<()> {
         &mut params,
     )?;
 
+    // Fine delle sessioni: i collegamenti che entrano nei due sink, dal registro.
+    let registry = core.get_registry_rc()?;
+    let links = Rc::new(RefCell::new(Links { input_node: HashMap::new(), count: 0 }));
+    let sinks = [games.as_raw_ptr(), apps.as_raw_ptr()];
+    let recount = {
+        let shared = shared.clone();
+        move |l: &mut Links| {
+            let ids = sinks.map(|s| unsafe { pw_sys::pw_stream_get_node_id(s) });
+            let count = l.input_node.values().filter(|n| ids.contains(n)).count();
+            if count == 0 && l.count > 0 {
+                let n = shared.sessions_ended.fetch_add(1, Ordering::AcqRel) + 1;
+                if verbose {
+                    eprintln!("[nodo] ultimo flusso chiuso: fine della sessione {n}, modulo riconfigurato");
+                }
+            } else if count > 0 && l.count == 0 && verbose {
+                eprintln!("[nodo] flusso collegato ai sink ({count} collegamenti)");
+            }
+            l.count = count;
+        }
+    };
+    let recount = Rc::new(recount);
+    let (links_add, recount_add) = (links.clone(), recount.clone());
+    let (links_rm, recount_rm) = (links.clone(), recount.clone());
+    let _registry_listener = registry
+        .add_listener_local()
+        .global(move |g| {
+            if g.type_ != pw::types::ObjectType::Link {
+                return;
+            }
+            let Some(node) = g.props.and_then(|p| p.get("link.input.node")).and_then(|v| v.parse::<u32>().ok()) else {
+                return;
+            };
+            let mut l = links_add.borrow_mut();
+            l.input_node.insert(g.id, node);
+            recount_add(&mut l);
+        })
+        .global_remove(move |id| {
+            let mut l = links_rm.borrow_mut();
+            if l.input_node.remove(&id).is_some() {
+                recount_rm(&mut l);
+            }
+        })
+        .register();
+
+    // Instradamento automatico dei flussi che seguono il default (L6).
+    let _router = args.route.then(|| {
+        crate::route::Router::start(
+            &registry,
+            [format!("{}-{games_name}", args.name), format!("{}-stereo", args.name)],
+            format!("{}-output", args.name),
+            group.clone(),
+            verbose,
+        )
+    });
+
+    // Comandi di controllo (cambio di profilo a caldo).
+    let _control = match &args.control {
+        Some(path) => {
+            let fifo = open_fifo(path)?;
+            let ctl = Control { shared: shared.clone(), blobs: args.module.blobs.clone(), mode: args.module.mode, pending: String::new() };
+            let ctl = RefCell::new(ctl);
+            eprintln!("comandi da {}", path.display());
+            Some(mainloop.loop_().add_io(fifo, spa::support::system::IoFlags::IN, move |f| ctl.borrow_mut().read(f)))
+        }
+        None => None,
+    };
+
     // Ogni secondo: latenza dell'adattatore annunciata al grafo (ProcessLatency, così i client
     // la vedono nella latenza del sink) e, con -v, statistiche.
     let sh_t = shared.clone();
@@ -585,7 +687,7 @@ pub fn run(args: Args) -> Result<()> {
             let s = &sh_t.stats;
             let cycles = s.cycles.load(Ordering::Relaxed);
             eprintln!(
-                "[nodo] cicli {} (+{}), quantum {}, giochi {} (vuoti {}), app {} (vuoti {}), modulo {}, riconfigurazioni {}, senza buffer d'uscita {}, errori {}, trigger falliti {}, process max {:.3} ms",
+                "[nodo] cicli {} (+{}), quantum {}, giochi {} (vuoti {}), app {} (vuoti {}), modulo {}, riconfigurazioni {}, cambi di profilo {}, senza buffer d'uscita {}, errori {}, trigger falliti {}, process max {:.3} ms",
                 cycles,
                 cycles - last_cycles.get(),
                 s.quantum.load(Ordering::Relaxed),
@@ -595,6 +697,7 @@ pub fn run(args: Args) -> Result<()> {
                 s.empty[APPS].load(Ordering::Relaxed),
                 if s.idle.load(Ordering::Relaxed) { "fermo" } else { "in moto" },
                 s.resets.load(Ordering::Relaxed),
+                s.changes.load(Ordering::Relaxed),
                 s.no_output.load(Ordering::Relaxed),
                 s.errors.load(Ordering::Relaxed),
                 s.trigger_failed.load(Ordering::Relaxed),
@@ -628,6 +731,88 @@ pub fn run(args: Args) -> Result<()> {
         bail!("{} cicli con errori di elaborazione", shared.stats.errors.load(Ordering::Relaxed));
     }
     Ok(())
+}
+
+/// Collegamenti del grafo per nodo d'ingresso, e quanti entrano nei sink del nodo.
+struct Links {
+    input_node: HashMap<u32, u32>,
+    count: usize,
+}
+
+/// Crea (se manca) e apre il FIFO dei comandi. In lettura e scrittura: senza scrittori aperti un
+/// FIFO in sola lettura darebbe fine file a ogni giro.
+fn open_fifo(path: &Path) -> Result<std::fs::File> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+    match std::fs::metadata(path) {
+        Ok(m) if m.file_type().is_fifo() => {}
+        Ok(_) => bail!("{}: esiste e non è un FIFO", path.display()),
+        Err(_) => {
+            let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+            if unsafe { libc::mkfifo(c.as_ptr(), 0o600) } != 0 {
+                bail!("mkfifo {}: {}", path.display(), std::io::Error::last_os_error());
+            }
+        }
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .with_context(|| format!("apertura di {}", path.display()))
+}
+
+/// Comandi dal FIFO, una riga ciascuno:
+///   profilo <cartella> [frame <n>]   blob della cartella di cattura come profilo nuovo, sulla
+///                                     stessa istanza del modulo; con `frame` dal blocco che
+///                                     inizia al frame n della sessione (per la verifica)
+struct Control {
+    shared: Arc<Shared>,
+    blobs: BlobSource,
+    mode: Mode,
+    pending: String,
+}
+
+impl Control {
+    fn read(&mut self, f: &mut std::fs::File) {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = f.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            self.pending.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        while let Some(i) = self.pending.find('\n') {
+            let line: String = self.pending.drain(..=i).collect();
+            if let Err(e) = self.command(line.trim()) {
+                eprintln!("comando «{}»: {e:#}", line.trim());
+            }
+        }
+    }
+
+    fn command(&mut self, line: &str) -> Result<()> {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words.as_slice() {
+            [] => Ok(()),
+            ["profilo", dir, rest @ ..] => {
+                let at = match rest {
+                    [] => None,
+                    ["frame", n] => Some(n.parse::<u64>().context("frame")?),
+                    _ => bail!("uso: profilo <cartella> [frame <n>]"),
+                };
+                let values = self.blobs.with_capture(PathBuf::from(dir)).fx_values(self.mode)?;
+                // Le sessioni successive ripartono da questi blob (il property store è cambiato).
+                self.blobs.captures = vec![PathBuf::from(dir)];
+                self.blobs.init = None;
+                self.blobs.runtime = None;
+                let change = Change { values, notify: PROFILE_CHANGE_KEYS.to_vec(), at };
+                self.shared.control.lock().unwrap_or_else(|e| e.into_inner()).push(change);
+                eprintln!("profilo {dir}{}: in consegna al modulo", at.map(|f| format!(" dal frame {f} della sessione")).unwrap_or_default());
+                Ok(())
+            }
+            _ => bail!("comando sconosciuto (profilo <cartella> [frame <n>])"),
+        }
+    }
 }
 
 fn state_changed(name: &str, old: StreamState, new: StreamState, verbose: bool) {

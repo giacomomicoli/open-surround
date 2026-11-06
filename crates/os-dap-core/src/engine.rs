@@ -64,6 +64,15 @@ pub trait Backend: Sized {
     fn reconfigure(&mut self) -> Result<()> {
         anyhow::bail!("riconfigurazione del modulo non implementata da questo backend")
     }
+
+    /// Cambio di profilo a caldo, come su Windows (doc sez. 12.13, W8): i `values` sostituiscono
+    /// quelli del property store FX "user" e il modulo riceve, sulla stessa istanza, una
+    /// notifica di cambio di proprietà (HandleNotification) per ciascuna chiave di `notify`,
+    /// nell'ordine dato. Nessun ConfigureEncoder: il modulo decide da sé cosa riapplicare.
+    fn change_properties(&mut self, values: &[(PropKey, Value)], notify: &[PropKey]) -> Result<()> {
+        let _ = (values, notify);
+        anyhow::bail!("cambio di profilo a caldo non implementato da questo backend")
+    }
 }
 
 pub struct Engine<B: Backend> {
@@ -112,9 +121,18 @@ impl<B: Backend> Engine<B> {
         self.block_frames
     }
 
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
     /// Riporta il modulo allo stato appena configurato: vedi [`Backend::reconfigure`].
     pub fn reconfigure(&mut self) -> Result<()> {
         self.backend.reconfigure()
+    }
+
+    /// Cambio di profilo a caldo: vedi [`Backend::change_properties`].
+    pub fn change_properties(&mut self, values: &[(PropKey, Value)], notify: &[PropKey]) -> Result<()> {
+        self.backend.change_properties(values, notify)
     }
 
     /// Buffer di un ingresso statico (bed 0-16 o oggetto bypass 17-18) da riempire prima di `process`.
