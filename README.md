@@ -9,43 +9,15 @@ The goal is to use a Dolby Access license you already own on Linux, with every p
 setting of the Windows app (Game, Movie, Music, Voice, Custom 1-3, intelligent equalizer,
 graphic equalizer, volume leveler, virtualizer) and no audible difference.
 
-> **Status: work in progress.** Phases 0-3 and 3-bis of the [roadmap](#roadmap) are done, and
-> all the verification of phase 4 is done: the original module runs on Linux through a native PE
-> loader (no Wine), and a PipeWire node (`os-pipewire`) runs it in real time with a virtual 7.1
-> sink for games and a stereo sink for regular applications, reproducing the Windows output to
-> within float32 rounding, on the synthetic test signals and on 194 s of real 5.1 audio alike,
-> with graph quanta of 1024 and 480 frames. Phase 4 stays open for three behaviours that the node
-> does not match yet: a profile change during playback, a fresh module for each listening session,
-> and automatic routing of games and applications to the right sink. What Windows does in the first
-> two cases is now measured with an ETW trace of the real module, and the reference recordings are
-> made: it creates a new module for every stream, whatever the pause, and applies a profile change
-> to the running module through `HandleNotification`, keeping its state. The resume point, with the
-> exact steps (on Linux), is section 12.13 of the analysis, "Punto di ripresa".
-> Profiles are still taken from captures made on Windows: the profile model and the user
-> interface are phases 5 and 6.
-
-## Why not reimplement the DSP?
-
-Rewriting or decompiling the Dolby DSP would at best sound *similar*. The module is plain
-x86-64 machine code with a small, now documented, COM-style interface, so the same file can run
-on both operating systems. On Windows the system loader loads it; on Linux a native PE loader
-(no Wine) will load it and provide the handful of Windows APIs it imports. A shared core makes
-sure both platforms hand the module exactly the same data.
-
-```
-              os-dap-core (shared: profile blobs, objects, metadata, gain chain, routing)
-                 │                                         │
-   Windows backend: LoadLibrary + COM objects       Linux backend: native PE loader + shims
-   (os-dap-host, verified)                          of the Windows APIs the module uses
-                 │                                         │                 │
-        DolbyAudioProcessing.dll (original, the same file on both platforms)
-```
-
-On Linux the loader maps the sections, applies relocations, fills the import table with Rust
-implementations of the ~130 Windows APIs the module imports (win64 ABI), installs a synthetic
-TEB/PEB in the GS segment for the module's thread-local storage, runs `DllMain` and the WinRT
-activation sequence. Details in the [analysis document](docs/analisi-dolby-access.md),
-section 12.11 (Italian).
+> **Status: work in progress.** Phases 0-4 of the [roadmap](#roadmap) are done: the original
+> module runs on Linux through a native PE loader (no Wine), and a PipeWire node (`os-pipewire`)
+> runs it in real time with a virtual 7.1 sink for games and a stereo sink for regular
+> applications, reproducing the Windows output to within float32 rounding, on the synthetic test
+> signals and on 194 s of real 5.1 audio alike, with graph quanta of 1024 and 480 frames. Like
+> Windows, the node starts a fresh module for every listening session, applies a profile change to
+> the running module through `HandleNotification`, and routes streams that follow the default
+> sink to the games or the applications sink by their channel count. Profiles are still taken
+> from captures made on Windows: the profile model and the user interface are phases 5 and 6.
 
 ## Verified results
 
@@ -69,6 +41,15 @@ case (`docs/reference/verify-pipewire.sh`), and so do the 3 real-audio tracks; t
 latency beyond the module's own 512 frames (10.7 ms). The node's recorded output is
 bit-identical to the offline render, with the default graph quantum of 1024 frames and with the
 graph forced to 480 frames.
+
+Two behaviours of the real module were measured on Windows with an ETW trace and reference
+recordings, and reproduced by the node: two sessions separated by a pause both match the
+recording of a fresh module (−148.9 dB), as Windows destroys the module when the last stream is
+released; a profile change during playback, delivered to the same instance as the same
+`HandleNotification` calls Windows makes, matches the Windows recording over the whole track
+(−148.9 dB) when it changes the leveler or the equalizer. When it switches the virtualizer off,
+the 22 ms crossfade differs, most likely because Windows delivers the notification on another
+thread while the module is processing, and the output matches again right after it.
 
 The estimated gain difference is 0.000 dB in every case. Details, including the Windows gain
 chain (−3 dB → Dolby → endpoint volume) and how application stereo differs from game beds, are
@@ -107,6 +88,8 @@ pub trait Backend: Sized {
     fn open(setup: &ModuleSetup) -> Result<Self>;
     /// IDAPModule2::EncodeAudioData.
     unsafe fn encode(&mut self, input: *mut EncodeInput, out: *mut f32) -> Result<()>;
+    // Optional, for real time: reconfigure() (ConfigureEncoder again, a fresh module) and
+    // change_properties() (new profile blobs plus HandleNotification, same instance).
 }
 ```
 
@@ -176,16 +159,33 @@ target/release/os-pipewire --capture docs/reference/captures/<profile> \
 
 Both sinks feed the same `EncodeAudioData` call in the same graph cycle, as on Windows. Their
 volume (one value shared by the two sinks, like a Windows endpoint) is applied after the module,
-where Windows applies the endpoint volume; the signal entering the module is never scaled. Make
-`open-surround-stereo` the default sink and send games to `open-surround-7.1` (for example
-`PULSE_SINK=open-surround-7.1 %command%` in Steam). PipeWire upmixes stereo streams played
-into the 7.1 sink unless the client sets `channelmix.upmix = false`.
+where Windows applies the endpoint volume; the signal entering the module is never scaled.
 
-The module is only called while a sink receives audio, and after `--idle-ms` (default 2000) of
-silence on both sinks it is reconfigured, so each listening session starts from a clean module
-state, as the Windows reference recordings do (the volume leveler remembers what it processed).
-The 2 s are a choice, not a measurement: when exactly Windows starts the module afresh is one of
-the open points of phase 4. Changing profile means restarting the node with other captures.
+The module is only called while a sink receives audio. When the last stream linked to the two
+sinks goes away, the module is reconfigured, so the next session starts from a clean module
+state, as on Windows, which creates a new module for every stream (the volume leveler remembers
+what it processed). `--idle-ms <n>` also resets it after n ms of silence with streams still linked.
+
+Profile changes during playback: with `--control <fifo>` the node reads commands from a FIFO
+(created if missing), one per line. `profilo <capture folder>` hands the module the profile blobs
+of that folder on the same instance, with the notifications Windows sends when Dolby Access writes
+a profile, so the leveler state survives the change as on Windows:
+
+```
+target/release/os-pipewire --capture docs/reference/captures/movie-balanced --dll … --control /run/user/$UID/os-control &
+echo "profilo docs/reference/captures/music-warm" > /run/user/$UID/os-control
+```
+
+Routing: when the default sink is one of the two, a stream that did not pick a sink itself goes to
+`open-surround-7.1` if it has more than 2 channels and to `open-surround-stereo` otherwise. The
+node sets the stream's `target.object` in the `default` metadata, as pavucontrol does when the user
+moves a stream, and WirePlumber relinks it; the format is known once the stream is linked, so
+its first cycles may play in the other sink. A stream with its own target (`pw-play --target`,
+`PULSE_SINK`, `node.target`, `node.dont-move`) or moved by the user is left alone. `--no-route`
+turns the rule off. So the usual setup is: make `open-surround-stereo` (or `open-surround-7.1`)
+the default sink, and games with 5.1/7.1 output land in the games sink by themselves.
+PipeWire upmixes stereo streams played into the 7.1 sink unless the client sets
+`channelmix.upmix = false`.
 The node adds no latency when the graph quantum is a multiple of 256 frames (256, 512,
 1024…) and less than 256 frames otherwise; the module itself delays the signal by 512 frames
 (10.7 ms). Both are announced to the graph (`ProcessLatency`), so players can compensate.
@@ -215,11 +215,23 @@ The node adds no latency when the graph quantum is a multiple of 256 frames (256
   (on a machine with a higher `clock.min-quantum`, force it with `pw-metadata -n settings 0
   clock.force-quantum <n>` and set it back to 0 afterwards). The recording goes to memory
   (`$XDG_RUNTIME_DIR`) first: written straight to disk at 480 frames, `pw-record` dropped whole
-  cycles on long tracks.
+  cycles on long tracks. Run the 194 s tracks on an idle machine: under load `pw-play` can miss a
+  cycle (it shows up as empty cycles of the games sink in the node's `-v` statistics), and with the
+  volume leveler one lost cycle changes the rest of the track. `NODE_ARGS="…"` passes extra
+  options to the node.
+- `docs/reference/verify-sessioni-cambi.sh [sessioni|cambi|tutto]`: on the live node, two
+  sessions separated by a pause (each must match the fresh-module reference) and the three profile
+  changes recorded on Windows (`target/verify-fase4`, from `fase4-windows.ps1`), sent through the
+  control FIFO at the frame found offline with `os-dap-linux --change <frame>:<folder>`; the node's
+  output must also be bit-identical to the offline render with the same changes.
+- `docs/reference/verify-route.sh`: automatic routing with `pw-play` and `paplay` streams, with
+  and without their own target. It switches the default sink to the node for a few seconds and
+  restores it at the end.
 - `docs/reference/trace-shims.gdb`: gdb script that prints which risky Windows API shims the
   module actually calls during a run, with arguments, return values and the calling RVA (used to
   triage phase 3-bis); `docs/reference/trace-node.sh` runs it on the live PipeWire node with a
-  fixed scenario (both sinks at once, volume and mute changes, end of session, second session).
+  fixed scenario (both sinks at once, volume and mute changes, two live profile changes, end of
+  session, second session).
 - `os-pw-latency`: measures, inside the PipeWire graph, the latency the node adds (impulses into a
   sink, detected on the monitor of the sink the node plays to).
 
@@ -251,7 +263,7 @@ is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three fol
 | 2 | Shared core `os-dap-core` behind a backend trait | done |
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
-| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | in progress: `os-pipewire`; all 74 cases recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB), volume after the module, the node adds only the module's 512 frames of latency. Windows part done on 2026-11-05: build and tests green, `regress-host.ps1` 78/78 identical to the baseline, the 3 real-audio tracks exported. Linux checks done on 2026-11-05: the 3 real-audio tracks give −148.8 dB on Linux offline, through the real-time adapter and from the PipeWire node, whose output is bit-identical to the offline render; with the graph forced to 480 frames all 77 cases are bit-identical to the offline render. Windows references done on 2026-11-05 (W5-W9), with an ETW trace of the real module: without a loopback capture Windows creates a fresh module for every stream, whatever the pause; a profile change reaches the same instance through `HandleNotification`, without a reset, re-applying only the runtime parameters. Remaining, on Linux: sessions and live profile changes in the node, and automatic routing (section 12.13, "Punto di ripresa") |
+| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | done (2026-11-06): `os-pipewire`; all 77 cases (74 synthetic, 3 real-audio tracks) recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB) and are bit-identical to the offline render at graph quanta of 1024 and 480 frames; volume after the module; the node adds only the module's 512 frames of latency. From an ETW trace of the real module on Windows: a fresh module for every session (verified on the node at −148.9 dB), live profile changes through `HandleNotification` on the same instance (2 of the 3 recorded changes at −148.9 dB over the whole track, the virtualizer switch differs only during its 22 ms crossfade), automatic routing of games and applications by channel count |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 

@@ -28,13 +28,22 @@
 //!     --name <prefisso>  prefisso dei nomi dei nodi (default open-surround)
 //!     --target <nodo>    nodo su cui suonare l'uscita (default: scelta del session manager)
 //!     --latency <n>      quantum richiesto al grafo, in frame a 48 kHz (node.latency)
-//!     --idle-ms <n>      dopo n ms senza flussi (la coda del modulo è finita) il modulo viene
-//!                        riconfigurato e fermato fino al flusso successivo, che riparte da uno
-//!                        stato pulito come su Windows (default 2000; 0 = mai)
+//!     --control <fifo>   legge comandi dal FIFO (creato se manca), una riga ciascuno:
+//!                        profilo <cartella> [frame <n>]  cambio di profilo a caldo con i blob
+//!                        della cartella, sulla stessa istanza del modulo, come Dolby Access
+//!     --idle-ms <n>      riconfigura il modulo anche dopo n ms senza audio con i flussi ancora
+//!                        collegati (default 0 = mai). La fine della sessione, come su Windows,
+//!                        è la chiusura dell'ultimo flusso collegato ai sink: lì il modulo viene
+//!                        sempre riconfigurato e il flusso successivo riparte da uno stato pulito
 //!     --always-on        uscita non passiva: il dispositivo resta attivo anche senza flussi
+//!     --no-route         niente instradamento automatico. Di default, quando il sink di default
+//!                        è uno dei due del nodo, un flusso che non ha scelto il sink va in quello
+//!                        dei giochi se ha più di 2 canali, in quello delle applicazioni se no
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod node;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod route;
 
 use anyhow::{bail, Context, Result};
 use os_dap_core::options::ModuleOptions;
@@ -49,6 +58,8 @@ pub struct Args {
     pub latency: Option<u32>,
     pub idle_ms: u32,
     pub always_on: bool,
+    pub control: Option<std::path::PathBuf>,
+    pub route: bool,
 }
 
 fn usage() -> String {
@@ -70,8 +81,10 @@ impl Args {
             name: "open-surround".into(),
             target: None,
             latency: None,
-            idle_ms: 2000,
+            idle_ms: 0,
             always_on: false,
+            control: None,
+            route: true,
         };
         let mut it = args.into_iter();
         while let Some(flag) = it.next() {
@@ -93,6 +106,8 @@ impl Args {
                 "--latency" => a.latency = Some(val()?.parse()?),
                 "--idle-ms" => a.idle_ms = val()?.parse()?,
                 "--always-on" => a.always_on = true,
+                "--control" => a.control = Some(val()?.into()),
+                "--no-route" => a.route = false,
                 "-h" | "--help" => {
                     eprintln!("{}", usage());
                     std::process::exit(0);

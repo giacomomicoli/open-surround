@@ -63,6 +63,16 @@ pub const OTHER_FMTIDS: &[Guid] = &[
     Guid(0xe36464a1_2f4b_440b_a776_8b32b26a7f01),
     Guid(0xd5e60007_c479_4002_bebe_075a1613a70d),
 ];
+/// Chiavi notificate da Windows al modulo a ogni scrittura di Dolby Access, nell'ordine della
+/// traccia ETW (doc sez. 12.13, W8): PKEY_DAPVR_INITTIME_DABS, PKEY_DAPVR_RUNTIME_DABS,
+/// PKEY_DAPVR_INITTIME_DAHP, PKEY_DAPVR_RUNTIME_DAHP, DAFM_PROFILE.
+pub const PROFILE_CHANGE_KEYS: [PropKey; 5] = [
+    PropKey { fmtid: PKEY_DAPVR_FMTID, pid: 4 },
+    PropKey { fmtid: PKEY_DAPVR_FMTID, pid: 5 },
+    PropKey { fmtid: PKEY_DAPVR_FMTID, pid: 1 },
+    PropKey { fmtid: PKEY_DAPVR_FMTID, pid: 2 },
+    PropKey { fmtid: OTHER_FMTIDS[0], pid: 1 },
+];
 /// PKEY_AudioEndpoint_GUID (mmdeviceapi.h).
 pub const PKEY_AUDIOENDPOINT_GUID: PropKey = PropKey { fmtid: Guid(0x1da5d803_d492_4edd_8c23_e0c0ffee7f0e), pid: 4 };
 /// PKEY_Device_FriendlyName / DEVPKEY_Device_FriendlyName.
@@ -149,6 +159,13 @@ fn read_blob(path: &Path, skip: usize) -> Result<Vec<u8>> {
 }
 
 impl BlobSource {
+    /// Gli stessi blob letti da un'altra cartella di cattura (stesso endpoint, stesso header):
+    /// il profilo d'arrivo di un cambio a caldo. Tutti i valori della cartella, come Dolby
+    /// Access che riscrive il contesto intero.
+    pub fn with_capture(&self, dir: PathBuf) -> BlobSource {
+        BlobSource { captures: vec![dir], init: None, runtime: None, ..self.clone() }
+    }
+
     /// Valori del property store FX "user" (IAudioSystemEffectsPropertyStore::OpenUserPropertyStore),
     /// ordinati per chiave. Verifica che ci siano i blob init e runtime della modalità.
     pub fn fx_values(&self, mode: Mode) -> Result<Vec<(PropKey, Value)>> {
