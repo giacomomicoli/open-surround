@@ -18,6 +18,8 @@ graphic equalizer, volume leveler, virtualizer) and no audible difference.
 > the running module through `HandleNotification`, and routes streams that follow the default
 > sink to the games or the applications sink by their channel count. Profiles are still taken
 > from captures made on Windows: the profile model and the user interface are phases 5 and 6.
+> Phase 5 is next and starts on Linux; its starting point (data, what is known, steps) is
+> section 12.14 of the analysis.
 
 ## Verified results
 
@@ -264,7 +266,7 @@ is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three fol
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
 | 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | done (2026-11-06): `os-pipewire`; all 77 cases (74 synthetic, 3 real-audio tracks) recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB) and are bit-identical to the offline render at graph quanta of 1024 and 480 frames; volume after the module; the node adds only the module's 512 frames of latency. From an ETW trace of the real module on Windows: a fresh module for every session (verified on the node at −148.9 dB), live profile changes through `HandleNotification` on the same instance (2 of the 3 recorded changes at −148.9 dB over the whole track, the virtualizer switch differs only during its 22 ms crossfade), automatic routing of games and applications by channel count |
-| 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | planned |
+| 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | next: starts on Linux, where all the blobs of the 19 captured states already are; one targeted capture session on Windows later (graphic equalizer). Starting point: section 12.14 of the analysis |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 
 Acceptance for phases 3-4: the same inputs and blobs give a residual of about −149 dB against the
