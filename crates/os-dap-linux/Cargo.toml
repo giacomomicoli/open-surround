@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 os-dap-core = { path = "../os-dap-core" }
+os-profiles = { path = "../os-profiles" }
 os-pe-loader = { path = "../os-pe-loader" }
 anyhow = "1"
 

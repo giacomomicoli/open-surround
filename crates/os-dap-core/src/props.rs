@@ -95,11 +95,20 @@ pub fn device_id(endpoint: Guid) -> String {
     format!("{{0.0.0.00000000}}.{{{endpoint:?}}}")
 }
 
+/// Converte uno stato del modello dei profili, in forma testuale (`film:warm`, …), nei valori
+/// del contesto Dolby senza header (`os_profiles::resolve`). Il nucleo non dipende dal modello:
+/// i programmi che accettano `--profile` installano questa funzione in [`BlobSource::resolver`].
+pub type ProfileResolver = fn(&str) -> Result<Vec<(PropKey, Vec<u8>)>>;
+
 /// Da dove vengono i blob Dolby del contesto FX.
 #[derive(Clone, Debug, Default)]
 pub struct BlobSource {
     /// Cartelle di cattura; le successive sovrascrivono i valori delle precedenti.
     pub captures: Vec<PathBuf>,
+    /// Stato del modello dei profili (`--profile`), al posto delle catture.
+    pub profile: Option<String>,
+    /// Conversione di `profile` in blob, installata dal programma.
+    pub resolver: Option<ProfileResolver>,
     /// Endpoint (8 cifre esadecimali) da usare nelle catture; se assente il primo con `,5`.
     pub endpoint: Option<String>,
     /// Sostituiscono i blob init-time e runtime della modalità scelta.
@@ -163,32 +172,56 @@ impl BlobSource {
     /// il profilo d'arrivo di un cambio a caldo. Tutti i valori della cartella, come Dolby
     /// Access che riscrive il contesto intero.
     pub fn with_capture(&self, dir: PathBuf) -> BlobSource {
-        BlobSource { captures: vec![dir], init: None, runtime: None, ..self.clone() }
+        BlobSource { captures: vec![dir], profile: None, init: None, runtime: None, ..self.clone() }
+    }
+
+    /// Il profilo d'arrivo di un cambio a caldo: una cartella di cattura se `target` è una
+    /// cartella esistente, altrimenti uno stato del modello dei profili.
+    pub fn with_target(&self, target: &str) -> BlobSource {
+        if Path::new(target).is_dir() {
+            self.with_capture(PathBuf::from(target))
+        } else {
+            BlobSource { captures: Vec::new(), profile: Some(target.to_string()), init: None, runtime: None, ..self.clone() }
+        }
     }
 
     /// Valori del property store FX "user" (IAudioSystemEffectsPropertyStore::OpenUserPropertyStore),
     /// ordinati per chiave. Verifica che ci siano i blob init e runtime della modalità.
     pub fn fx_values(&self, mode: Mode) -> Result<Vec<(PropKey, Value)>> {
-        let mut endpoint = self.endpoint.clone();
-        let mut files = load_captures(&self.captures, &mut endpoint)?;
+        let mut values: BTreeMap<PropKey, Vec<u8>> = BTreeMap::new();
+        if let Some(profile) = &self.profile {
+            if !self.captures.is_empty() {
+                bail!("--profile e --capture sono alternativi");
+            }
+            let resolve = self.resolver.context("questo programma non conosce i profili (--profile)")?;
+            values.extend(resolve(profile).with_context(|| format!("profilo {profile}"))?);
+            eprintln!("profilo {profile}: blob generati dal modello");
+            for key in values.keys() {
+                eprintln!("  {key} <- modello");
+            }
+        } else {
+            let mut endpoint = self.endpoint.clone();
+            let files = load_captures(&self.captures, &mut endpoint)?;
+            eprintln!("endpoint delle catture: {}", endpoint.as_deref().unwrap_or("-"));
+            for (key, path) in &files {
+                eprintln!("  {key} <- {}", path.display());
+                values.insert(*key, read_blob(path, self.blob_skip)?);
+            }
+        }
         let (pid_init, pid_runtime) = mode.pids();
         for (pid, path) in [(pid_init, &self.init), (pid_runtime, &self.runtime)] {
             if let Some(path) = path {
-                files.insert(PropKey { fmtid: PKEY_DAPVR_FMTID, pid }, path.clone());
+                let key = PropKey { fmtid: PKEY_DAPVR_FMTID, pid };
+                eprintln!("  {key} <- {}", path.display());
+                values.insert(key, read_blob(path, self.blob_skip)?);
             }
         }
         for pid in [pid_init, pid_runtime] {
-            if !files.contains_key(&PropKey { fmtid: PKEY_DAPVR_FMTID, pid }) {
-                bail!("manca il valore {{1b4dab55-…}},{pid} ({mode:?}): aggiungere una cattura completa o --init/--runtime");
+            if !values.contains_key(&PropKey { fmtid: PKEY_DAPVR_FMTID, pid }) {
+                bail!("manca il valore {{1b4dab55-…}},{pid} ({mode:?}): aggiungere una cattura completa, --profile o --init/--runtime");
             }
         }
-        eprintln!("endpoint delle catture: {}", endpoint.as_deref().unwrap_or("-"));
-        let mut values = Vec::new();
-        for (key, path) in &files {
-            eprintln!("  {key} <- {}", path.display());
-            values.push((*key, Value::Blob(read_blob(path, self.blob_skip)?)));
-        }
-        Ok(values)
+        Ok(values.into_iter().map(|(k, v)| (k, Value::Blob(v))).collect())
     }
 }
 

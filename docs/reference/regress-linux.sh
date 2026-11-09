@@ -12,6 +12,13 @@
 #     fase 4: fa passare ogni caso dall'adattatore del tempo reale a cicli di n frame
 #     (--quantum, come il nodo PipeWire). Le uscite, tolta la latenza dell'adattatore,
 #     devono restare identiche byte per byte alla baseline (doc sez. 12.13).
+#   PROFILE=1 docs/reference/regress-linux.sh …
+#     fase 5 (doc sez. 12.14, L3): invece dei blob catturati usa quelli generati dal modello
+#     dei profili (--profile, con lo stato ricavato dalla cattura da os-blob import) e scrive in
+#     target/regress-linux-profilo; le uscite devono essere identiche byte per byte a quelle
+#     dalle catture:
+#       grep -v '^#' docs/reference/regress-linux-baseline.sha256 \
+#         | sed 's#target/regress-linux/#target/regress-linux-profilo/#' | sha256sum -c
 
 set -u
 cd "$(dirname "$0")/../.."
@@ -19,8 +26,11 @@ cd "$(dirname "$0")/../.."
 DLL="${1:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
 FILTER="${2:-}"
 QUANTUM="${QUANTUM:-}"
+PROFILE="${PROFILE:-}"
 VERIFY=target/verify
 OUT=target/regress-linux
+[ -n "$PROFILE" ] && OUT=target/regress-linux-profilo
+OSBLOB=target/debug/os-blob
 HOST=target/debug/os-dap-linux
 WAVCMP=target/debug/wavcmp
 
@@ -80,7 +90,17 @@ for dir in "$VERIFY"/*/ "$VERIFY"/*/*/; do
     mkdir -p "$out"
     outwav="$OUT/$tag/linux.wav"
 
-    if ! "$HOST" --capture "$dir" --dll "$DLL" "${extra[@]}" --volume-db "$volume" "$input" "$outwav" > "$out/host.log" 2>&1; then
+    blobs=(--capture "$dir")
+    if [ -n "$PROFILE" ]; then
+        if ! stato=$("$OSBLOB" import "$dir" 2> "$out/import.log"); then
+            echo "ERRORE $name: os-blob import è fallito (vedi $out/import.log)"
+            fail=$((fail + 1))
+            continue
+        fi
+        blobs=(--profile "$stato")
+    fi
+
+    if ! "$HOST" "${blobs[@]}" --dll "$DLL" "${extra[@]}" --volume-db "$volume" "$input" "$outwav" > "$out/host.log" 2>&1; then
         echo "ERRORE $name: os-dap-linux è fallito (vedi $out/host.log)"
         tail -5 "$out/host.log" | sed 's/^/    /'
         fail=$((fail + 1))

@@ -60,6 +60,7 @@ fn diciannove_stati_identici() {
         }
         let ctx = DolbyContext::read_capture(&dir, ENDPOINT).unwrap();
         assert_eq!(Profile::import(&ctx).unwrap(), profile, "{name}: importazione");
+        assert_eq!(profile.to_string().parse::<Profile>().unwrap(), profile, "{name}: forma testuale");
     }
 }
 

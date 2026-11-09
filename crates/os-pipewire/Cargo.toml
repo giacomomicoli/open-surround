@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 os-dap-core = { path = "../os-dap-core" }
+os-profiles = { path = "../os-profiles" }
 anyhow = "1"
 
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]

@@ -20,8 +20,10 @@ graphic equalizer, volume leveler, virtualizer) and no audible difference.
 > from captures made on Windows: the profile model and the user interface are phases 5 and 6.
 > Phase 5 is in progress on Linux (section 12.14 of the analysis): a profile model with the
 > controls of the app (`os-profiles`) generates the Dolby context of all 19 captured states byte
-> for byte identical to what Dolby Access writes, and imports captured blobs back into a profile;
-> using it in the node and the offline renderer instead of captures comes next.
+> for byte identical to what Dolby Access writes, and imports captured blobs back into a profile.
+> The node and the offline renderer take a profile (`--profile film:warm`) instead of a capture,
+> with output byte for byte identical in all 77 regression cases. What remains is confirming the
+> graphic equalizer mapping on more captures from Windows.
 
 ## Verified results
 
