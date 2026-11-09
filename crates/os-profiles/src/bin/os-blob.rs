@@ -7,6 +7,9 @@
 //!   os-blob diff <a.bin> <b.bin>   stampa solo i campi diversi fra due valori della stessa chiave
 //!   os-blob check <cartella>...    andata e ritorno su tutti i .bin delle cartelle (ricorsivo) e
 //!                                  sui contesti completi; esce con errore se un file non torna
+//!   os-blob import <cartella> [<ep>]  stato del modello dei profili da cui viene il contesto
+//!                                  completo dell'endpoint (default 32ed16b6), se il modello lo
+//!                                  rigenera identico; altrimenti i campi diversi
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +17,7 @@ use anyhow::{bail, Context, Result};
 use os_dap_core::props::parse_capture_name;
 use os_profiles::blob::{strip_header, Decoded};
 use os_profiles::check::check_tree;
+use os_profiles::{DolbyContext, Profile};
 
 fn load(path: &Path) -> Result<Decoded> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
@@ -63,8 +67,13 @@ fn main() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Some("import") if (2..=3).contains(&args.len()) => {
+            let ep = args.get(2).map_or("32ed16b6", String::as_str);
+            let ctx = DolbyContext::read_capture(Path::new(&args[1]), ep)?;
+            println!("{}", Profile::import(&ctx)?);
+        }
         _ => {
-            eprintln!("uso: os-blob dump <file.bin>... | diff <a.bin> <b.bin> | check <cartella>...");
+            eprintln!("uso: os-blob dump <file.bin>... | diff <a.bin> <b.bin> | check <cartella>... | import <cartella> [<ep>]");
             std::process::exit(2);
         }
     }
