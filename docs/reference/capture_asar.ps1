@@ -2,8 +2,9 @@
 # degli endpoint audio e li salva in docs/reference/captures/<nome>/.
 # Uso:  powershell -File capture_asar.ps1 -Name music-warm
 # Salva, per ogni endpoint che ha il contesto Dolby, tutti i valori del contesto: {1b4dab55-...},N come
-# <endpoint>-N.bin (cuffie: init ,4 + runtime ,5; speaker: init ,1 + runtime ,2), gli altri come
-# <endpoint>-<primi 8 hex del fmtid>-N.bin
+# <endpoint>-N.bin (cuffie DAHP: init ,1 + runtime ,2; speaker DABS: init ,4 + runtime ,5; doc 10.3,
+# corretta il 2/11/2026), gli altri come <endpoint>-<primi 8 hex del fmtid>-N.bin.
+# Per leggerli: os-blob dump <file.bin>, os-blob import <cartella> [<endpoint>] (doc 12.14)
 # e stampa un riepilogo con hash, cosi' si vede quali endpoint hanno ricevuto l'ultima scrittura.
 param([Parameter(Mandatory = $true)][string]$Name)
 
