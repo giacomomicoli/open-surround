@@ -18,9 +18,10 @@ graphic equalizer, volume leveler, virtualizer) and no audible difference.
 > the running module through `HandleNotification`, and routes streams that follow the default
 > sink to the games or the applications sink by their channel count. Profiles are still taken
 > from captures made on Windows: the profile model and the user interface are phases 5 and 6.
-> Phase 5 is in progress on Linux (section 12.14 of the analysis): the codec of the six Dolby
-> context values (`os-profiles`) reads and rewrites all 612 captured blobs byte for byte; the
-> profile model that generates them comes next.
+> Phase 5 is in progress on Linux (section 12.14 of the analysis): a profile model with the
+> controls of the app (`os-profiles`) generates the Dolby context of all 19 captured states byte
+> for byte identical to what Dolby Access writes, and imports captured blobs back into a profile;
+> using it in the node and the offline renderer instead of captures comes next.
 
 ## Verified results
 
@@ -76,8 +77,9 @@ crates/
 ├─ os-dap-linux/   Linux backend: same COM sequence as the Windows shell, on top of the loader
 ├─ os-pipewire/    Linux real time: PipeWire node (two virtual sinks → module → binaural output)
 │                  and os-pw-latency (latency measured inside the graph)
-├─ os-profiles/    Dolby Access profiles (phase 5): codec of the endpoint's Dolby context values,
-│                  identical byte for byte, and os-blob (dump, diff, round-trip check)
+├─ os-profiles/    Dolby Access profiles (phase 5): profile model → the endpoint's Dolby context
+│                  values, identical byte for byte, import back, and os-blob (dump, diff, check,
+│                  import)
 └─ os-verify/      reference tools: ref-capture (Windows recording) and wavcmp (comparison)
 docs/
 ├─ analisi-dolby-access.md   full analysis: interface reconstruction, blob format, verification (Italian)
