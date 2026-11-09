@@ -16,6 +16,11 @@
 #
 # Uso:
 #   docs/reference/verify-sessioni-cambi.sh [sessioni|cambi|tutto] [DLL]
+#   PROFILE=1 …  fase 5 (doc 12.14, L3): il nodo parte con --profile e riceve i cambi come
+#                `profilo <stato>` nel FIFO, con gli stati ricavati dalle catture da os-blob
+#                import; il render offline di confronto resta quello dalle catture, quindi
+#                "bit-identico" vale anche come verifica dei blob generati. Uscite in
+#                target/verify-sessioni-cambi-profilo
 
 set -u
 cd "$(dirname "$0")/../.."
@@ -25,6 +30,9 @@ DLL="${2:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
 VERIFY=target/verify
 FASE4=target/verify-fase4
 OUT=target/verify-sessioni-cambi
+PROFILE="${PROFILE:-}"
+[ -n "$PROFILE" ] && OUT=target/verify-sessioni-cambi-profilo
+OSBLOB=target/debug/os-blob
 NODE=target/debug/os-pipewire
 OFFLINE=target/debug/os-dap-linux
 WAVCMP=target/debug/wavcmp
@@ -94,7 +102,9 @@ start() {
     local capture="$1" log="$2"
     shift 2
     rm -f "$REC"
-    "$NODE" --capture "$capture" --dll "$DLL" --name "$PREFIX" --target "$NULL" --volume-db -9.3428 \
+    local blobs=(--capture "$capture")
+    [ -n "$PROFILE" ] && blobs=(--profile "$("$OSBLOB" import "$capture")")
+    "$NODE" "${blobs[@]}" --dll "$DLL" --name "$PREFIX" --target "$NULL" --volume-db -9.3428 \
         -v "$@" > "$log" 2>&1 &
     node_pid=$!
     for n in "$PREFIX-7.1" "$PREFIX-stereo" "$PREFIX-output"; do
@@ -195,7 +205,11 @@ if [ "$WHAT" = cambi ] || [ "$WHAT" = tutto ]; then
         "$OFFLINE" --dll "$DLL" --capture "$dir" --volume-db -9.3428 "${offline_args[@]}" \
             "$FASE4/cambio71.wav" "$out/offline.wav" > "$out/offline.log" 2>&1
         start "$dir" "$out/node.log" --control "$FIFO" || { fail=$((fail + 1)); continue; }
-        for c in $changes; do echo "profilo $dir/${c#*:} frame ${c%%:*}" > "$FIFO"; done
+        for c in $changes; do
+            target="$dir/${c#*:}"
+            [ -n "$PROFILE" ] && target=$("$OSBLOB" import "$target")
+            echo "profilo $target frame ${c%%:*}" > "$FIFO"
+        done
         sleep 0.5
         play "$sig"
         finish "$out/node.wav"

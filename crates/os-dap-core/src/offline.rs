@@ -2,10 +2,15 @@
 //! Stessa riga di comando su ogni piattaforma; cambia solo il backend che carica il modulo.
 //!
 //! Uso:
-//!   os-dap-host [opzioni] --capture <dir> <ingresso.wav> <uscita.wav>
+//!   os-dap-host [opzioni] (--capture <dir> | --profile <stato>) <ingresso.wav> <uscita.wav>
 //!     --capture <dir>    cartella di cattura (docs/reference/captures/<nome>, vedi
 //!                        capture_asar.ps1); ripetibile: le cartelle successive
 //!                        sovrascrivono i valori delle precedenti
+//!     --profile <stato>  blob generati dal modello dei profili (os-profiles, doc 12.14) al
+//!                        posto delle catture: gaming|film|music:<off|balanced|warm|detailed|
+//!                        performance>, voice, custom1|2|3[:virt=on|off][:leveler=on|off]
+//!                        [:geq=<10 valori in 1/16 dB, 32 Hz … 16 kHz>]; `os-blob import
+//!                        <cartella>` stampa lo stato di una cattura
 //!     --endpoint <hex8>  endpoint da usare nelle catture (default: il primo con ,5)
 //!     --mode <m>         cuffie (default, DAHP: legge {1b4dab55-…},1 + ,2) oppure
 //!                        speaker (DABS, speaker integrati: legge ,4 + ,5)
@@ -28,6 +33,7 @@
 //!     --tail-ms <n>      silenzio aggiunto in coda per svuotare i filtri (default 500)
 //!     --change <f>:<dir> cambio di profilo a caldo, come Dolby Access su Windows: dal primo
 //!                        blocco che inizia al frame f o dopo, i blob della cartella <dir>
+//!                        (o dello stato <dir>, se non è una cartella: --change 96000:film:warm)
 //!                        sostituiscono quelli del property store e il modulo riceve le
 //!                        notifiche di Windows (HandleNotification, stessa istanza, doc 12.13
 //!                        L5); ripetibile, in ordine di frame
@@ -53,7 +59,7 @@ pub struct Args {
     pub stereo_bypass: bool,
     pub gain_db: Option<f32>,
     pub volume_db: f32,
-    pub changes: Vec<(usize, PathBuf)>,
+    pub changes: Vec<(usize, String)>,
 }
 
 pub fn usage() -> String {
@@ -94,7 +100,7 @@ impl Args {
                 "--change" => {
                     let v = val()?;
                     let (f, dir) = v.split_once(':').with_context(|| format!("--change {v}: serve <frame>:<cartella>"))?;
-                    changes.push((f.parse::<usize>().with_context(|| format!("--change {v}: frame"))?, PathBuf::from(dir)));
+                    changes.push((f.parse::<usize>().with_context(|| format!("--change {v}: frame"))?, dir.to_string()));
                 }
                 "-h" | "--help" => {
                     eprintln!("{}", usage());
@@ -140,8 +146,8 @@ pub fn run<B: Backend>(args: &Args) -> Result<()> {
     eprintln!("modulo DAP configurato ({:?}, blocco {} frame, {} canali in ingresso)", args.module.mode, args.module.block, in_ch);
 
     let mut changes = Vec::new();
-    for (frame, dir) in &args.changes {
-        let values = args.module.blobs.with_capture(dir.clone()).fx_values(args.module.mode)?;
+    for (frame, target) in &args.changes {
+        let values = args.module.blobs.with_target(target).fx_values(args.module.mode)?;
         changes.push((*frame, Change { values, notify: PROFILE_CHANGE_KEYS.to_vec(), at: Some(*frame as u64) }));
     }
     let mut changes = changes.into_iter().peekable();

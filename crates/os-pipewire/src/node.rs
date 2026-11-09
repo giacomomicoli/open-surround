@@ -34,7 +34,7 @@
 use std::cell::{RefCell, UnsafeCell};
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -763,9 +763,11 @@ fn open_fifo(path: &Path) -> Result<std::fs::File> {
 }
 
 /// Comandi dal FIFO, una riga ciascuno:
-///   profilo <cartella> [frame <n>]   blob della cartella di cattura come profilo nuovo, sulla
-///                                     stessa istanza del modulo; con `frame` dal blocco che
-///                                     inizia al frame n della sessione (per la verifica)
+///   profilo <cartella|stato> [frame <n>]   blob della cartella di cattura, o generati dal
+///                                     modello dei profili per lo stato (`film:warm`, …), come
+///                                     profilo nuovo, sulla stessa istanza del modulo; con
+///                                     `frame` dal blocco che inizia al frame n della sessione
+///                                     (per la verifica)
 struct Control {
     shared: Arc<Shared>,
     blobs: BlobSource,
@@ -794,23 +796,22 @@ impl Control {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words.as_slice() {
             [] => Ok(()),
-            ["profilo", dir, rest @ ..] => {
+            ["profilo", target, rest @ ..] => {
                 let at = match rest {
                     [] => None,
                     ["frame", n] => Some(n.parse::<u64>().context("frame")?),
-                    _ => bail!("uso: profilo <cartella> [frame <n>]"),
+                    _ => bail!("uso: profilo <cartella|stato> [frame <n>]"),
                 };
-                let values = self.blobs.with_capture(PathBuf::from(dir)).fx_values(self.mode)?;
+                let blobs = self.blobs.with_target(target);
+                let values = blobs.fx_values(self.mode)?;
                 // Le sessioni successive ripartono da questi blob (il property store è cambiato).
-                self.blobs.captures = vec![PathBuf::from(dir)];
-                self.blobs.init = None;
-                self.blobs.runtime = None;
+                self.blobs = blobs;
                 let change = Change { values, notify: PROFILE_CHANGE_KEYS.to_vec(), at };
                 self.shared.control.lock().unwrap_or_else(|e| e.into_inner()).push(change);
-                eprintln!("profilo {dir}{}: in consegna al modulo", at.map(|f| format!(" dal frame {f} della sessione")).unwrap_or_default());
+                eprintln!("profilo {target}{}: in consegna al modulo", at.map(|f| format!(" dal frame {f} della sessione")).unwrap_or_default());
                 Ok(())
             }
-            _ => bail!("comando sconosciuto (profilo <cartella> [frame <n>])"),
+            _ => bail!("comando sconosciuto (profilo <cartella|stato> [frame <n>])"),
         }
     }
 }

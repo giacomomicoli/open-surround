@@ -2,7 +2,7 @@
 //! Dolby originale e un'uscita stereo binaurale, con la stessa catena di Windows.
 //!
 //! Uso:
-//!   os-pipewire [opzioni] --capture <dir> --dll <DolbyAudioProcessing.dll>
+//!   os-pipewire [opzioni] (--capture <dir> | --profile <stato>) --dll <DolbyAudioProcessing.dll>
 //!   Sink creati (il prefisso cambia con --name):
 //!     open-surround-7.1      giochi: bed 7.1 (7.1.4 con --channels 12), −3 dB prima del modulo
 //!     open-surround-stereo   applicazioni normali: oggetti bypass 17-18, 0 dB
@@ -12,6 +12,8 @@
 //!
 //!   Opzioni del modulo, come os-dap-linux:
 //!     --capture <dir>    cartella di cattura con i blob Dolby; ripetibile
+//!     --profile <stato>  blob generati dal modello dei profili al posto delle catture
+//!                        (film:warm, custom1:virt=off, …: vedi os-dap-linux --help)
 //!     --endpoint <hex8>  endpoint da usare nelle catture (default: il primo con ,5)
 //!     --mode <m>         cuffie (default) oppure speaker
 //!     --init <file>      sostituisce il blob init-time della modalità scelta
@@ -29,8 +31,9 @@
 //!     --target <nodo>    nodo su cui suonare l'uscita (default: scelta del session manager)
 //!     --latency <n>      quantum richiesto al grafo, in frame a 48 kHz (node.latency)
 //!     --control <fifo>   legge comandi dal FIFO (creato se manca), una riga ciascuno:
-//!                        profilo <cartella> [frame <n>]  cambio di profilo a caldo con i blob
-//!                        della cartella, sulla stessa istanza del modulo, come Dolby Access
+//!                        profilo <cartella|stato> [frame <n>]  cambio di profilo a caldo con i
+//!                        blob della cartella o dello stato del modello, sulla stessa istanza
+//!                        del modulo, come Dolby Access
 //!     --idle-ms <n>      riconfigura il modulo anche dopo n ms senza audio con i flussi ancora
 //!                        collegati (default 0 = mai). La fine della sessione, come su Windows,
 //!                        è la chiusura dell'ultimo flusso collegato ai sink: lì il modulo viene
@@ -73,8 +76,10 @@ fn usage() -> String {
 
 impl Args {
     fn parse(args: impl IntoIterator<Item = String>) -> Result<Self> {
+        let mut module = ModuleOptions::default();
+        module.blobs.resolver = Some(os_profiles::resolve);
         let mut a = Args {
-            module: ModuleOptions::default(),
+            module,
             channels: 8,
             gain_db: None,
             volume_db: 0.0,
@@ -115,8 +120,9 @@ impl Args {
                 _ => bail!("opzione sconosciuta: {flag} (vedi --help)"),
             }
         }
-        if a.module.blobs.captures.is_empty() && (a.module.blobs.init.is_none() || a.module.blobs.runtime.is_none()) {
-            bail!("servono i blob Dolby: --capture <dir> (vedi --help)");
+        let b = &a.module.blobs;
+        if b.captures.is_empty() && b.profile.is_none() && (b.init.is_none() || b.runtime.is_none()) {
+            bail!("servono i blob Dolby: --capture <dir> o --profile <stato> (vedi --help)");
         }
         Ok(a)
     }

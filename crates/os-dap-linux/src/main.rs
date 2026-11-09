@@ -5,7 +5,8 @@
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() -> anyhow::Result<()> {
-    let args = os_dap_core::offline::Args::from_env()?;
+    let mut args = os_dap_core::offline::Args::from_env()?;
+    args.module.blobs.resolver = Some(os_profiles::resolve);
     os_dap_core::offline::run::<os_dap_linux::LinuxBackend>(&args)
 }
 

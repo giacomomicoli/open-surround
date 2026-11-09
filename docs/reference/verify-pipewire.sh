@@ -15,6 +15,9 @@
 #     filtro-profilo elabora solo le cartelle il cui nome contiene la stringa
 #   LATENCY=<n> …    chiede al grafo un quantum di n frame (node.latency, es. 480 o 256)
 #   NODE_ARGS="…" …  argomenti in più per os-pipewire (es. --no-route)
+#   PROFILE=1 …      fase 5 (doc 12.14, L3): il nodo usa i blob generati dal modello dei profili
+#                    (--profile, stato ricavato dalla cattura con os-blob import) invece di
+#                    quelli catturati; uscite in target/verify-pipewire-profilo
 
 set -u
 cd "$(dirname "$0")/../.."
@@ -23,8 +26,11 @@ DLL="${1:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
 FILTER="${2:-}"
 LATENCY="${LATENCY:-}"
 NODE_ARGS="${NODE_ARGS:-}"
+PROFILE="${PROFILE:-}"
 VERIFY=target/verify
 OUT=target/verify-pipewire
+[ -n "$PROFILE" ] && OUT=target/verify-pipewire-profilo
+OSBLOB=target/debug/os-blob
 NODE=target/debug/os-pipewire
 WAVCMP=target/debug/wavcmp
 PREFIX=os-verify
@@ -155,7 +161,16 @@ for dir in "$VERIFY"/*/ "$VERIFY"/*/*/; do
     [ -n "$LATENCY" ] && extra+=(--latency "$LATENCY")
     # shellcheck disable=SC2206
     [ -n "$NODE_ARGS" ] && extra+=($NODE_ARGS)
-    "$NODE" --capture "$dir" --dll "$DLL" --name "$PREFIX" --target "$NULL" --volume-db "$volume" \
+    blobs=(--capture "$dir")
+    if [ -n "$PROFILE" ]; then
+        if ! stato=$("$OSBLOB" import "$dir" 2> "$out/import.log"); then
+            echo "ERRORE $name: os-blob import è fallito (vedi $out/import.log)"
+            fail=$((fail + 1))
+            continue
+        fi
+        blobs=(--profile "$stato")
+    fi
+    "$NODE" "${blobs[@]}" --dll "$DLL" --name "$PREFIX" --target "$NULL" --volume-db "$volume" \
         "${extra[@]}" -v > "$out/node.log" 2>&1 &
     node_pid=$!
     ok=1

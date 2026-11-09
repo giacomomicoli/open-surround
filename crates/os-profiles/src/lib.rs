@@ -10,4 +10,4 @@ pub mod model;
 pub mod wire;
 
 pub use blob::{DafmProfile, DapVrInit, DapVrRuntime, Decoded, DolbyContext, D5e60007};
-pub use model::{Custom, Ieq, Profile};
+pub use model::{resolve, Custom, Ieq, Profile};
