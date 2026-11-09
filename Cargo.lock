@@ -310,6 +310,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "os-profiles"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "os-dap-core",
+]
+
+[[package]]
 name = "os-verify"
 version = "0.1.0"
 dependencies = [
