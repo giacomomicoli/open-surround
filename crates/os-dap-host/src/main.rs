@@ -13,7 +13,8 @@ mod stubs;
 
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
-    let args = os_dap_core::offline::Args::from_env()?;
+    let mut args = os_dap_core::offline::Args::from_env()?;
+    args.module.blobs.resolver = Some(os_profiles::resolve);
     os_dap_core::offline::run::<backend::WindowsBackend>(&args)
 }
 

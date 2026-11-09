@@ -276,6 +276,7 @@ dependencies = [
  "anyhow",
  "hound",
  "os-dap-core",
+ "os-profiles",
  "windows",
  "windows-core",
 ]
@@ -288,6 +289,7 @@ dependencies = [
  "hound",
  "os-dap-core",
  "os-pe-loader",
+ "os-profiles",
 ]
 
 [[package]]
@@ -306,6 +308,7 @@ dependencies = [
  "libc",
  "os-dap-core",
  "os-dap-linux",
+ "os-profiles",
  "pipewire",
 ]
 

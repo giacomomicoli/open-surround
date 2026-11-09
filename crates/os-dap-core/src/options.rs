@@ -38,12 +38,13 @@ impl Default for ModuleOptions {
 
 impl ModuleOptions {
     /// Interpreta `flag` se è un'opzione del modulo (`val` legge il valore che segue) e
-    /// restituisce `false` se non lo è: --dll, --capture, --endpoint, --mode, --init,
-    /// --runtime, --blob-skip, --block, --hp-render, -v.
+    /// restituisce `false` se non lo è: --dll, --capture, --profile, --endpoint, --mode,
+    /// --init, --runtime, --blob-skip, --block, --hp-render, -v.
     pub fn parse_flag(&mut self, flag: &str, val: &mut dyn FnMut() -> Result<String>) -> Result<bool> {
         match flag {
             "--dll" => self.dll = val()?.into(),
             "--capture" => self.blobs.captures.push(PathBuf::from(val()?)),
+            "--profile" => self.blobs.profile = Some(val()?),
             "--endpoint" => self.blobs.endpoint = Some(val()?.to_lowercase()),
             "--mode" => {
                 self.mode = match val()?.as_str() {
