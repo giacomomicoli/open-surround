@@ -6,6 +6,7 @@ members = [
     "crates/os-dap-linux",
     "crates/os-pe-loader",
     "crates/os-pipewire",
+    "crates/os-profiles",
     "crates/os-verify",
 ]
 

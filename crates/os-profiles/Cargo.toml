@@ -1,0 +1,13 @@
+[package]
+name = "os-profiles"
+description = "Dolby Access profile values: codec of the endpoint's Dolby context blobs (phase 5)"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = "1"
+os-dap-core = { path = "../os-dap-core" }
