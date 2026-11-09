@@ -8,9 +8,10 @@
 //! [`Profile::import`] fa l'inverso e accetta solo i contesti che il modello rigenera identici.
 
 use std::fmt;
+use std::str::FromStr;
 
-use anyhow::{bail, Result};
-use os_dap_core::Mode;
+use anyhow::{anyhow, bail, Context as _, Result};
+use os_dap_core::{Mode, PropKey};
 
 use crate::blob::{DafmProfile, DapVrInit, DapVrRuntime, DolbyContext, D5e60007};
 
@@ -316,6 +317,68 @@ impl fmt::Display for Profile {
     }
 }
 
+/// Forma testuale, la stessa di `Display` (`--profile`, comando `profilo` del nodo):
+/// `gaming|film|music:<off|balanced|warm|detailed>` (per Gaming anche `performance`, uguale a
+/// `off`), `voice`, `custom1|2|3[:virt=on|off][:leveler=on|off][:geq=<10 interi>]` con il GEQ
+/// in 1/16 dB da 32 Hz a 16 kHz; le opzioni assenti dei Personalizzati prendono i valori di
+/// [`Custom::default`].
+impl FromStr for Profile {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Profile> {
+        let mut parts = s.trim().split(':');
+        let kind = parts.next().unwrap_or_default();
+        let opts: Vec<&str> = parts.collect();
+        let ieq = |allow_performance: bool| -> Result<Ieq> {
+            match opts.as_slice() {
+                ["performance"] if allow_performance => Ok(Ieq::Off),
+                [name] => Ieq::ALL
+                    .into_iter()
+                    .find(|i| i.name() == *name)
+                    .with_context(|| format!("{s}: preset IEQ sconosciuto {name} (off|balanced|warm|detailed)")),
+                _ => bail!("{s}: serve {kind}:<off|balanced|warm|detailed>"),
+            }
+        };
+        Ok(match kind {
+            "gaming" => Profile::Gaming { ieq: ieq(true)? },
+            "film" => Profile::Film { ieq: ieq(false)? },
+            "music" => Profile::Music { ieq: ieq(false)? },
+            "voice" if opts.is_empty() => Profile::Voice,
+            "custom1" | "custom2" | "custom3" => {
+                let mut c = Custom::default();
+                for opt in opts {
+                    let onoff = |v: &str| match v {
+                        "on" => Ok(true),
+                        "off" => Ok(false),
+                        _ => bail!("{s}: {opt}: atteso on|off"),
+                    };
+                    match opt.split_once('=') {
+                        Some(("virt", v)) => c.virtualizer = onoff(v)?,
+                        Some(("leveler", v)) => c.leveler = onoff(v)?,
+                        Some(("geq", v)) => {
+                            let g: Vec<i32> = v
+                                .split(',')
+                                .map(|x| x.trim().parse::<i32>())
+                                .collect::<Result<_, _>>()
+                                .with_context(|| format!("{s}: geq"))?;
+                            c.geq = g.try_into().map_err(|g: Vec<i32>| anyhow!("{s}: geq con {} valori invece di 10", g.len()))?;
+                        }
+                        _ => bail!("{s}: opzione sconosciuta {opt} (virt=, leveler=, geq=)"),
+                    }
+                }
+                Profile::Custom { slot: kind.as_bytes()[6] - b'0', settings: c }
+            }
+            _ => bail!("profilo sconosciuto: {s} (gaming|film|music:<ieq>, voice, custom1|2|3[:…])"),
+        })
+    }
+}
+
+/// I sei valori senza header dello stato dato in forma testuale: la conversione che i
+/// programmi installano in `BlobSource::resolver` per `--profile`.
+pub fn resolve(text: &str) -> Result<Vec<(PropKey, Vec<u8>)>> {
+    Ok(text.parse::<Profile>()?.context().encode())
+}
+
 /// Matrice di mix della virtualizzazione negli speaker (Q14), uguale in tutti gli stati.
 const MIX_MATRIX: [i32; 16] = [16384, 0, 0, 16384, 11583, 11583, 8192, 8192, 16384, 0, 0, 16384, 16384, 0, 0, 16384];
 
@@ -395,5 +458,22 @@ mod tests {
         let blob = [-145, -113, -43, 0, -31, -32, -33, -34, -35, -37, -39, -2, 34, 80, 74, 67, 57, 54, 50, 42];
         assert_eq!(geq_expand(&sliders), blob);
         assert_eq!(geq_expand(&[0; 10]), [0; 20]);
+    }
+
+    #[test]
+    fn forma_testuale() {
+        let p: Profile = "custom2:leveler=on:geq=1,2,3,4,5,6,7,8,9,-10".parse().unwrap();
+        assert_eq!(
+            p,
+            Profile::Custom { slot: 2, settings: Custom { virtualizer: true, leveler: true, geq: [1, 2, 3, 4, 5, 6, 7, 8, 9, -10] } }
+        );
+        assert_eq!(p.to_string().parse::<Profile>().unwrap(), p);
+        assert_eq!("gaming:performance".parse::<Profile>().unwrap(), Profile::Gaming { ieq: Ieq::Off });
+        assert_eq!("film:warm".parse::<Profile>().unwrap().to_string(), "film:warm");
+        assert_eq!("voice".parse::<Profile>().unwrap(), Profile::Voice);
+        assert_eq!("custom3".parse::<Profile>().unwrap(), Profile::Custom { slot: 3, settings: Custom::default() });
+        for bad in ["film", "music:performance", "voice:off", "custom4", "custom1:geq=1,2", "custom1:virt=forse", "x"] {
+            assert!(bad.parse::<Profile>().is_err(), "{bad}");
+        }
     }
 }
