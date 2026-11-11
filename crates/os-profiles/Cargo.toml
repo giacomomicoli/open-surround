@@ -11,3 +11,5 @@ authors.workspace = true
 [dependencies]
 anyhow = "1"
 os-dap-core = { path = "../os-dap-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
