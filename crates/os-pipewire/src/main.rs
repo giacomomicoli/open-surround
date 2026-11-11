@@ -34,6 +34,14 @@
 //!                        profilo <cartella|stato> [frame <n>]  cambio di profilo a caldo con i
 //!                        blob della cartella o dello stato del modello, sulla stessa istanza
 //!                        del modulo, come Dolby Access
+//!                        stato                         profilo attivo e stato del modulo
+//!     --socket <path>    gli stessi comandi su un socket Unix, con una riga di risposta
+//!                        (`ok …` o `errore …`) per ogni connessione: è il canale
+//!                        dell'interfaccia (os-ctl, doc 12.15). Di solito
+//!                        $XDG_RUNTIME_DIR/open-surround/control.sock
+//!     --settings <file>  parte dal profilo attivo del file delle impostazioni
+//!                        dell'interfaccia (al posto di --profile/--capture; se il file manca,
+//!                        i default: film:off). Di solito ~/.config/open-surround/settings.json
 //!     --idle-ms <n>      riconfigura il modulo anche dopo n ms senza audio con i flussi ancora
 //!                        collegati (default 0 = mai). La fine della sessione, come su Windows,
 //!                        è la chiusura dell'ultimo flusso collegato ai sink: lì il modulo viene
@@ -62,6 +70,7 @@ pub struct Args {
     pub idle_ms: u32,
     pub always_on: bool,
     pub control: Option<std::path::PathBuf>,
+    pub socket: Option<std::path::PathBuf>,
     pub route: bool,
 }
 
@@ -89,8 +98,10 @@ impl Args {
             idle_ms: 0,
             always_on: false,
             control: None,
+            socket: None,
             route: true,
         };
+        let mut settings: Option<std::path::PathBuf> = None;
         let mut it = args.into_iter();
         while let Some(flag) = it.next() {
             let mut val = || it.next().with_context(|| format!("manca il valore di {flag}"));
@@ -112,6 +123,8 @@ impl Args {
                 "--idle-ms" => a.idle_ms = val()?.parse()?,
                 "--always-on" => a.always_on = true,
                 "--control" => a.control = Some(val()?.into()),
+                "--socket" => a.socket = Some(val()?.into()),
+                "--settings" => settings = Some(val()?.into()),
                 "--no-route" => a.route = false,
                 "-h" | "--help" => {
                     eprintln!("{}", usage());
@@ -120,9 +133,18 @@ impl Args {
                 _ => bail!("opzione sconosciuta: {flag} (vedi --help)"),
             }
         }
+        if let Some(path) = settings {
+            let b = &a.module.blobs;
+            if !b.captures.is_empty() || b.profile.is_some() {
+                bail!("--settings è alternativo a --profile e --capture");
+            }
+            let active = os_profiles::Settings::load(&path)?.active();
+            eprintln!("impostazioni {}: profilo attivo {active}", path.display());
+            a.module.blobs.profile = Some(active.to_string());
+        }
         let b = &a.module.blobs;
         if b.captures.is_empty() && b.profile.is_none() && (b.init.is_none() || b.runtime.is_none()) {
-            bail!("servono i blob Dolby: --capture <dir> o --profile <stato> (vedi --help)");
+            bail!("servono i blob Dolby: --capture <dir>, --profile <stato> o --settings <file> (vedi --help)");
         }
         Ok(a)
     }
