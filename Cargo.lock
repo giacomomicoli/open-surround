@@ -3257,6 +3257,7 @@ name = "os-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "i-slint-backend-testing",
  "os-profiles",
  "slint",
  "slint-build",

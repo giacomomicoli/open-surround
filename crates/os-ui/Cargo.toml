@@ -15,5 +15,10 @@ anyhow = "1"
 # come ripiego.
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility"] }
 
+[dev-dependencies]
+# Backend di prova di Slint: clic e valori sugli elementi per etichetta accessibile, senza
+# finestra vera (test dei clic in main.rs).
+i-slint-backend-testing = "=1.18.1"
+
 [build-dependencies]
 slint-build = "1.18"

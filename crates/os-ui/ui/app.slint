@@ -15,6 +15,11 @@ component ProfileButton inherits Rectangle {
     height: 40px;
     border-radius: 6px;
     background: selected ? Palette.accent-background : (ta.has-hover ? Palette.alternate-background : transparent);
+    accessible-role: button;
+    accessible-label: text;
+    accessible-checkable: true;
+    accessible-checked: selected;
+    accessible-action-default => { root.clicked(); }
     Text {
         x: 14px;
         text: root.text;
@@ -24,6 +29,39 @@ component ProfileButton inherits Rectangle {
         color: selected ? Palette.accent-foreground : Palette.foreground;
     }
     ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Pulsante di un preset. Non usa il Button "checkable" di Slint, che al clic cambia da solo il
+// proprio stato e smette di seguire `selected`: un preset cliccato restava acceso anche dopo
+// averne scelto un altro o cambiato profilo (prova a mano del 12/11/2026).
+component PresetButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> active: true;
+    callback clicked;
+    height: 34px;
+    horizontal-stretch: 1;
+    border-radius: 4px;
+    opacity: active ? 1 : 0.4;
+    background: selected ? Palette.accent-background : (ta.has-hover && active ? Palette.control-background.darker(0.1) : Palette.control-background);
+    border-width: 1px;
+    border-color: selected ? Palette.accent-background : Palette.border;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: active;
+    accessible-checkable: true;
+    accessible-checked: selected;
+    accessible-action-default => { if active { root.clicked(); } }
+    Text {
+        text: root.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        color: selected ? Palette.accent-foreground : Palette.control-foreground;
+    }
+    ta := TouchArea {
+        enabled: root.active;
         clicked => { root.clicked(); }
     }
 }
@@ -38,11 +76,14 @@ export component AppWindow inherits Window {
     in property <[string]> profiles;
     in property <int> active;
     // 0 Gaming, 1 Film, 2 Musica, 3 Voce, 4-6 Personalizzati (ordine di Kind::ALL)
-    in property <bool> performance;
+    // Legati in due direzioni agli interruttori: un interruttore cliccato cambia da solo il
+    // proprio `checked`, e con un legame in una sola direzione smetterebbe di seguire il
+    // profilo (Person. 1 → Person. 2 mostrava ancora i valori di Person. 1).
+    in-out property <bool> performance;
     // preset IEQ nell'ordine dell'app: 0 Dettagliato, 1 Equilibrato, 2 Caldo, 3 Non attivo
     in property <int> ieq;
-    in property <bool> virtualizer;
-    in property <bool> leveler;
+    in-out property <bool> virtualizer;
+    in-out property <bool> leveler;
     in property <[Band]> geq;
     in property <string> node-status;
     in property <bool> node-ok;
@@ -102,8 +143,8 @@ export component AppWindow inherits Window {
 
             if root.active == 0: Switch {
                 text: "Modalità performance";
-                checked: root.performance;
-                toggled => { root.set-performance(self.checked); }
+                checked <=> root.performance;
+                toggled => { root.set-performance(root.performance); }
             }
 
             if root.active <= 2: GroupBox {
@@ -112,12 +153,10 @@ export component AppWindow inherits Window {
                 vertical-stretch: 0;
                 HorizontalLayout {
                     spacing: 8px;
-                    for name[i] in ["Dettagliato", "Equilibrato", "Caldo", "Non attivo"]: Button {
+                    for name[i] in ["Dettagliato", "Equilibrato", "Caldo", "Non attivo"]: PresetButton {
                         text: name;
-                        horizontal-stretch: 1;
-                        checkable: true;
-                        checked: root.has-ieq && i == root.ieq;
-                        enabled: root.has-ieq;
+                        selected: root.has-ieq && i == root.ieq;
+                        active: root.has-ieq;
                         clicked => { root.set-ieq(i); }
                     }
                 }
@@ -132,13 +171,13 @@ export component AppWindow inherits Window {
                 spacing: 24px;
                 Switch {
                     text: "Virtualizzatore surround";
-                    checked: root.virtualizer;
-                    toggled => { root.set-virtualizer(self.checked); }
+                    checked <=> root.virtualizer;
+                    toggled => { root.set-virtualizer(root.virtualizer); }
                 }
                 Switch {
                     text: "Livellatore del volume";
-                    checked: root.leveler;
-                    toggled => { root.set-leveler(self.checked); }
+                    checked <=> root.leveler;
+                    toggled => { root.set-leveler(root.leveler); }
                 }
             }
 
@@ -160,6 +199,7 @@ export component AppWindow inherits Window {
                             maximum: 192;
                             step: 1;
                             value: band.value;
+                            accessible-label: band.hz + " Hz";
                             changed(v) => { root.set-geq(i, v); }
                         }
                         Text {
