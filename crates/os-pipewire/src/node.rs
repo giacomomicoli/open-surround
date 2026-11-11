@@ -492,6 +492,8 @@ pub fn run(args: Args) -> Result<()> {
         control: std::sync::Mutex::new(Vec::with_capacity(8)),
         stats: Stats::default(),
     });
+    // Lo Streamer parte fermo; senza questo `stato` direbbe "in moto" fino al primo ciclo.
+    shared.stats.idle.store(true, Ordering::Relaxed);
 
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None).context("main loop di PipeWire")?;
@@ -650,14 +652,26 @@ pub fn run(args: Args) -> Result<()> {
         )
     });
 
-    // Comandi di controllo (cambio di profilo a caldo).
+    // Comandi di controllo (cambio di profilo a caldo): FIFO per gli script, socket con
+    // risposta per l'interfaccia (doc 12.15, L2). Stesso stato per entrambi.
+    let ctl = Rc::new(RefCell::new(Control::new(shared.clone(), &args.module.blobs, args.module.mode)));
     let _control = match &args.control {
         Some(path) => {
             let fifo = open_fifo(path)?;
-            let ctl = Control { shared: shared.clone(), blobs: args.module.blobs.clone(), mode: args.module.mode, pending: String::new() };
-            let ctl = RefCell::new(ctl);
+            let ctl = ctl.clone();
             eprintln!("comandi da {}", path.display());
             Some(mainloop.loop_().add_io(fifo, spa::support::system::IoFlags::IN, move |f| ctl.borrow_mut().read(f)))
+        }
+        None => None,
+    };
+    let _socket = match &args.socket {
+        Some(path) => {
+            let socket = ControlSocket::bind(path)?;
+            let listener = socket.listener.try_clone()?;
+            let ctl = ctl.clone();
+            eprintln!("comandi con risposta su {}", path.display());
+            let source = mainloop.loop_().add_io(listener, spa::support::system::IoFlags::IN, move |l| serve(l, &ctl));
+            Some((source, socket))
         }
         None => None,
     };
@@ -762,20 +776,34 @@ fn open_fifo(path: &Path) -> Result<std::fs::File> {
         .with_context(|| format!("apertura di {}", path.display()))
 }
 
-/// Comandi dal FIFO, una riga ciascuno:
+/// Comandi dal FIFO e dal socket, una riga ciascuno:
 ///   profilo <cartella|stato> [frame <n>]   blob della cartella di cattura, o generati dal
 ///                                     modello dei profili per lo stato (`film:warm`, …), come
 ///                                     profilo nuovo, sulla stessa istanza del modulo; con
 ///                                     `frame` dal blocco che inizia al frame n della sessione
 ///                                     (per la verifica)
+///   stato                             profilo attivo, stato del modulo, cambi consegnati
+/// Sul socket ogni comando ha una riga di risposta, `ok …` oppure `errore …`.
 struct Control {
     shared: Arc<Shared>,
     blobs: BlobSource,
     mode: Mode,
     pending: String,
+    /// Il profilo attivo come è stato dato (stato del modello o cartella di cattura).
+    current: String,
+    /// Cambi accettati (consegnati al modulo o in attesa).
+    accepted: u64,
 }
 
 impl Control {
+    fn new(shared: Arc<Shared>, blobs: &BlobSource, mode: Mode) -> Control {
+        let current = match &blobs.profile {
+            Some(p) => p.clone(),
+            None => blobs.captures.iter().map(|c| c.display().to_string()).collect::<Vec<_>>().join(","),
+        };
+        Control { shared, blobs: blobs.clone(), mode, pending: String::new(), current, accepted: 0 }
+    }
+
     fn read(&mut self, f: &mut std::fs::File) {
         let mut buf = [0u8; 4096];
         while let Ok(n) = f.read(&mut buf) {
@@ -792,10 +820,22 @@ impl Control {
         }
     }
 
-    fn command(&mut self, line: &str) -> Result<()> {
+    /// Esegue un comando; il testo restituito è la risposta dopo `ok`.
+    fn command(&mut self, line: &str) -> Result<String> {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words.as_slice() {
-            [] => Ok(()),
+            [] => Ok(String::new()),
+            ["stato"] => {
+                let s = &self.shared.stats;
+                Ok(format!(
+                    "profilo={} modulo={} cambi={} consegnati={} fini-sessione={}",
+                    self.current,
+                    if s.idle.load(Ordering::Relaxed) { "fermo" } else { "in-moto" },
+                    self.accepted,
+                    s.changes.load(Ordering::Relaxed),
+                    self.shared.sessions_ended.load(Ordering::Relaxed),
+                ))
+            }
             ["profilo", target, rest @ ..] => {
                 let at = match rest {
                     [] => None,
@@ -809,12 +849,78 @@ impl Control {
                 let change = Change { values, notify: PROFILE_CHANGE_KEYS.to_vec(), at };
                 self.shared.control.lock().unwrap_or_else(|e| e.into_inner()).push(change);
                 eprintln!("profilo {target}{}: in consegna al modulo", at.map(|f| format!(" dal frame {f} della sessione")).unwrap_or_default());
-                Ok(())
+                self.current = target.to_string();
+                self.accepted += 1;
+                Ok(format!("profilo {target}"))
             }
-            _ => bail!("comando sconosciuto (profilo <cartella|stato> [frame <n>])"),
+            _ => bail!("comando sconosciuto (profilo <cartella|stato> [frame <n>], stato)"),
         }
     }
 }
+
+/// Socket di controllo: crea la cartella (0700), toglie un socket rimasto da un nodo che non
+/// c'è più e lo cancella alla fine.
+struct ControlSocket {
+    path: std::path::PathBuf,
+    listener: std::os::unix::net::UnixListener,
+}
+
+impl ControlSocket {
+    fn bind(path: &Path) -> Result<ControlSocket> {
+        use std::os::unix::fs::{DirBuilderExt, FileTypeExt};
+        use std::os::unix::net::{UnixListener, UnixStream};
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty() && !d.exists()) {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).with_context(|| format!("creazione di {}", dir.display()))?;
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_socket() => {
+                if UnixStream::connect(path).is_ok() {
+                    bail!("{}: c'è già un nodo in ascolto", path.display());
+                }
+                std::fs::remove_file(path).with_context(|| format!("rimozione di {}", path.display()))?;
+            }
+            Ok(_) => bail!("{}: esiste e non è un socket", path.display()),
+            Err(_) => {}
+        }
+        let listener = UnixListener::bind(path).with_context(|| format!("socket {}", path.display()))?;
+        listener.set_nonblocking(true)?;
+        Ok(ControlSocket { path: path.to_path_buf(), listener })
+    }
+}
+
+impl Drop for ControlSocket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Serve le connessioni in attesa: una riga di comando, una riga di risposta, chiusura. Il
+/// client ha [`CLIENT_TIMEOUT`] per scrivere la riga, così un client fermo non blocca a lungo
+/// il main loop (che gestisce volume e sessioni; il tempo reale è su un altro thread).
+fn serve(listener: &mut std::os::unix::net::UnixListener, ctl: &Rc<RefCell<Control>>) {
+    use std::io::{BufRead, BufReader, Write};
+    while let Ok((stream, _)) = listener.accept() {
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(CLIENT_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
+        let mut line = String::new();
+        let reply = match BufReader::new((&stream).take(4096)).read_line(&mut line) {
+            Ok(0) => continue,
+            Ok(_) => match ctl.borrow_mut().command(line.trim()) {
+                Ok(s) if s.is_empty() => "ok".to_string(),
+                Ok(s) => format!("ok {s}"),
+                Err(e) => {
+                    eprintln!("comando «{}»: {e:#}", line.trim());
+                    format!("errore {}", format!("{e:#}").replace('\n', " "))
+                }
+            },
+            Err(e) => format!("errore lettura del comando: {e}"),
+        };
+        let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
+    }
+}
+
+const CLIENT_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn state_changed(name: &str, old: StreamState, new: StreamState, verbose: bool) {
     match &new {

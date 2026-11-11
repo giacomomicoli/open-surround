@@ -8,6 +8,7 @@
 
 pub mod blob;
 pub mod check;
+pub mod control;
 pub mod model;
 pub mod settings;
 pub mod wire;
