@@ -1,0 +1,19 @@
+[package]
+name = "os-ui"
+description = "User interface with the controls of Dolby Access, over the profile model (phase 6)"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+os-profiles = { path = "../os-profiles" }
+anyhow = "1"
+# Niente backend Qt (servirebbe Qt6 installato): winit con FemtoVG, e il renderer software
+# come ripiego.
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility"] }
+
+[build-dependencies]
+slint-build = "1.18"
