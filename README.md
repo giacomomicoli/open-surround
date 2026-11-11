@@ -22,7 +22,9 @@ graphic equalizer, volume leveler, virtualizer) and no audible difference.
 > states and 17 targeted captures (graphic equalizer, switches, "Default" buttons), and imports
 > captured blobs back into a profile. The node and the offline renderer take a profile
 > (`--profile film:warm`) instead of a capture, with output byte for byte identical in all 77
-> regression cases. Next is phase 6, the user interface (Slint, plan in section 12.15).
+> regression cases. Phase 6, the user interface, is done on Linux (section 12.15): a settings
+> window with the controls of Dolby Access drives the node, which runs as a user service and
+> remembers the profile; the Windows build of the window is left.
 
 ## Verified results
 
@@ -80,8 +82,10 @@ crates/
 │                  and os-pw-latency (latency measured inside the graph)
 ├─ os-profiles/    Dolby Access profiles (phase 5): profile model → the endpoint's Dolby context
 │                  values, identical byte for byte, import back, and os-blob (dump, diff, check,
-│                  import)
+│                  import); settings of the UI (phase 6), control socket client and os-ctl
+├─ os-ui/          settings window (Slint), with the controls of Dolby Access
 └─ os-verify/      reference tools: ref-capture (Windows recording) and wavcmp (comparison)
+dist/linux/        systemd user unit, menu entry, install.sh
 docs/
 ├─ analisi-dolby-access.md   full analysis: interface reconstruction, blob format, verification (Italian)
 └─ reference/                capture and verification scripts, captured profile blobs
@@ -154,6 +158,34 @@ stereo float32. Main options (`--help` for all of them):
 | `--dll <file>` | path to `DolbyAudioProcessing.dll` |
 | `-v` | trace the module's calls into the host and print its internal log |
 
+### Installing on Linux (node as a service, settings window)
+
+```
+dist/linux/install.sh /path/to/DolbyAudioProcessing.dll
+systemctl --user enable --now open-surround
+```
+
+`install.sh` builds in release mode and installs into your home directory only:
+- `os-pipewire`, `os-ui`, `os-ctl` and `os-blob` into `~/.local/bin`;
+- a copy of the DLL into `~/.local/share/open-surround`;
+- the user unit `open-surround.service`;
+- the `open-surround` menu entry.
+
+It does not start anything itself: `systemctl --user enable --now open-surround` starts the node
+now and at every login. Then make `open-surround-stereo` (or `open-surround-7.1`) your default
+sink and open **open-surround** from the menu.
+
+![The settings window](docs/reference/os-ui-l3.png)
+
+The window (`os-ui`) has the controls of Dolby Access: the seven profiles, each remembering
+its own settings, the intelligent equalizer presets, the Game performance mode, the Custom
+profiles' virtualizer, volume leveler and 10-band graphic equalizer, and "Default". Every change
+is saved to `~/.config/open-surround/settings.json` and sent to the running node at once. The
+node starts from the saved profile (`--settings`) and takes changes on its control socket
+(`--socket`, `$XDG_RUNTIME_DIR/open-surround/control.sock`), so closing the window keeps the
+sound, and restarting the node keeps the profile. `os-ctl stato` prints what the node is doing.
+`dist/linux/install.sh --uninstall` removes everything except your settings and the DLL copy.
+
 ### Real time on Linux (PipeWire)
 
 `os-pipewire` takes the same module options and creates two virtual sinks in front of the
@@ -180,7 +212,9 @@ sinks goes away, the module is reconfigured, so the next session starts from a c
 state, as on Windows, which creates a new module for every stream (the volume leveler remembers
 what it processed). `--idle-ms <n>` also resets it after n ms of silence with streams still linked.
 
-Profile changes during playback: with `--control <fifo>` the node reads commands from a FIFO
+Profile changes during playback: the settings window uses the control socket (`--socket <path>`;
+one command per connection, one `ok …`/`errore …` reply line; `os-ctl` sends one from a shell).
+With `--control <fifo>` the node reads commands from a FIFO
 (created if missing), one per line. `profilo <state>` (or `profilo <capture folder>`) hands the
 module the blobs of that profile on the same instance, with the notifications Windows sends when Dolby Access writes
 a profile, so the leveler state survives the change as on Windows:
@@ -279,7 +313,7 @@ is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three fol
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
 | 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | done (2026-11-06): `os-pipewire`; all 77 cases (74 synthetic, 3 real-audio tracks) recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB) and are bit-identical to the offline render at graph quanta of 1024 and 480 frames; volume after the module; the node adds only the module's 512 frames of latency. From an ETW trace of the real module on Windows: a fresh module for every session (verified on the node at −148.9 dB), live profile changes through `HandleNotification` on the same instance (2 of the 3 recorded changes at −148.9 dB over the whole track, the virtualizer switch differs only during its 22 ms crossfade), automatic routing of games and applications by channel count |
 | 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | done (2026-11-11, section 12.14 of the analysis): codec of the six Dolby context values; profile model generating all 19 captured states and the 17 targeted Windows captures (graphic equalizer 10 → 20 bands, switches, "Default" buttons) byte for byte, and importing captures back; `--profile` in the offline renderer and the node with output identical to the captures in all 77 regression cases; each profile's default for the UI |
-| 6 | User interface with the same controls as Dolby Access, on both platforms | in progress (section 12.15 of the analysis): Slint app over the phase 5 profile model, a control socket for the node, settings saved per profile. Step L1 done (2026-11-11): the UI logic (`os_profiles::Settings`) reaches all 36 captured states through the app's controls with byte-identical blobs, with per-profile memory and "Default" buttons as in Dolby Access. Step L2 done (2026-11-12): a control socket on the node (`--socket`, answered commands, `os-ctl`) and `--settings` to start from the saved active profile; live changes sent over the socket give output bit-identical to the FIFO. Step L3 done (2026-11-12): the Slint window `os-ui` (profiles, IEQ presets, performance mode, switches, 10-band graphic EQ, "Default"), which saves the settings and drives the node |
+| 6 | User interface with the same controls as Dolby Access, on both platforms | in progress (section 12.15 of the analysis): Slint app over the phase 5 profile model, a control socket for the node, settings saved per profile. Step L1 done (2026-11-11): the UI logic (`os_profiles::Settings`) reaches all 36 captured states through the app's controls with byte-identical blobs, with per-profile memory and "Default" buttons as in Dolby Access. Step L2 done (2026-11-12): a control socket on the node (`--socket`, answered commands, `os-ctl`) and `--settings` to start from the saved active profile; live changes sent over the socket give output bit-identical to the FIFO. Step L3 done (2026-11-12): the Slint window `os-ui` (profiles, IEQ presets, performance mode, switches, 10-band graphic EQ, "Default"), which saves the settings and drives the node. Step L4 done (2026-11-12): systemd user unit, menu entry and `install.sh`; the node restarts from the saved profile. Left: the Windows build (W1) and a hands-on listening test |
 
 Acceptance for phases 3-4: the same inputs and blobs give a residual of about −149 dB against the
 Windows recordings in every configuration (−134…−147 dB for application stereo, as on Windows).
