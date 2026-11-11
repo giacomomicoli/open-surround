@@ -1,0 +1,27 @@
+Fase 5, passo W1 su Windows (11/11/2026). Dolby Access 3.27.12250, cuffie sull'endpoint 32ed16b6
+(Realtek Digital Output). Catture fatte con docs\reference\w1-capture.ps1; in ogni cartella
+import.txt e' l'uscita di `os-blob import <cartella> 32ed16b6`. Esito completo: doc 12.14,
+"Esito di W1".
+
+Controlli dell'app, profilo per profilo (passo 5 della procedura):
+- Gaming: preset IEQ e Modalita' performance. Nessun livellatore nell'interfaccia
+  (settings.json ha IsVolumeLevelerEnabled per Game: residuo, non e' un controllo).
+- Film, Musica: solo i preset IEQ.
+- Voce: solo i preset IEQ come riportato dall'utente (il modello non ne ha: nei blob catturati Voce
+  e' sempre lo stesso stato).
+- Person. 1-3: GEQ a 10 bande (+-12 dB, nessuna indicazione numerica sugli slider),
+  Virtualizzatore surround, Livellatore del volume, pulsante Predefinito. settings.json ha anche
+  IsDialogueEnhancerEnabled, senza interruttore nell'interfaccia.
+=> nessun controllo visibile che il modello non abbia: nessuna cattura w1-<profilo>-<controllo>.
+
+Pulsante "Predefinito":
+- Gaming -> Modalita' performance (nei blob: gaming:off)
+- Film -> IEQ Non attivo (film:off; provato partendo da Caldo)
+- Musica -> IEQ Equilibrato (music:balanced; partendo da Caldo)
+- Person. 1 e 2 -> virtualizzatore acceso, livellatore spento, GEQ piatto (runtime ,2 identici)
+
+settings.json: con la 3.27.12250 non viene piu' scritto (resta del 14/05/2026, versione 3.27.8090),
+nemmeno alla chiusura dell'app. Le impostazioni stanno in Settings\settings.dat (hive di
+LocalSettings; `reg load` richiede l'amministratore) e LocalState\_sessionState.xml e' cifrato con
+DPAPI. Per questo le cartelle w1-* non hanno settings.json: i valori degli slider si leggono dai
+blob (os-blob import).

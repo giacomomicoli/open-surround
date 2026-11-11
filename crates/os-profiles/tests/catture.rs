@@ -12,11 +12,18 @@ fn root() -> PathBuf {
 
 #[test]
 fn catture_del_repository() {
-    let r = check_tree(&[root().join("docs/reference/captures")]).unwrap();
+    let dir = root().join("docs/reference/captures");
+    let r = check_tree(&[dir.clone()]).unwrap();
     assert!(r.failures.is_empty(), "{:#?}", r.failures);
-    // 8 endpoint della cattura completa del 2/11 più 6 cartelle con i soli runtime di 8 endpoint.
-    assert_eq!(r.files, 48 + 6 * 16);
-    assert_eq!(r.contexts, 8);
+    // Catture complete di W1 (fase 5): 8 endpoint con tutti e sei i valori ciascuna.
+    let w1 = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().is_dir() && e.file_name().to_string_lossy().starts_with("w1-"))
+        .count();
+    // 8 endpoint della cattura completa del 2/11, 6 cartelle con i soli runtime di 8 endpoint, W1.
+    assert_eq!(r.files, 48 + 6 * 16 + w1 * 48);
+    assert_eq!(r.contexts, 8 + w1 * 8);
 }
 
 #[test]
