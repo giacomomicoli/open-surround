@@ -21,6 +21,9 @@
 #                import; il render offline di confronto resta quello dalle catture, quindi
 #                "bit-identico" vale anche come verifica dei blob generati. Uscite in
 #                target/verify-sessioni-cambi-profilo
+#   SOCKET=1 …   fase 6 (doc 12.15, L2): i cambi passano dal socket di controllo con os-ctl,
+#                il canale dell'interfaccia, invece che dal FIFO; ogni cambio deve avere la
+#                risposta `ok`. Uscite in …-socket (con PROFILE=1: …-profilo-socket)
 
 set -u
 cd "$(dirname "$0")/../.."
@@ -32,7 +35,10 @@ FASE4=target/verify-fase4
 OUT=target/verify-sessioni-cambi
 PROFILE="${PROFILE:-}"
 [ -n "$PROFILE" ] && OUT=target/verify-sessioni-cambi-profilo
+SOCKET="${SOCKET:-}"
+[ -n "$SOCKET" ] && OUT=$OUT-socket
 OSBLOB=target/debug/os-blob
+OSCTL=target/debug/os-ctl
 NODE=target/debug/os-pipewire
 OFFLINE=target/debug/os-dap-linux
 WAVCMP=target/debug/wavcmp
@@ -40,6 +46,7 @@ PREFIX=os-verify
 NULL=os-verify-null
 REC="${XDG_RUNTIME_DIR:-/dev/shm}/os-verify-node.wav"
 FIFO="${XDG_RUNTIME_DIR:-/dev/shm}/os-verify-control"
+SOCK="${XDG_RUNTIME_DIR:-/dev/shm}/os-verify-control.sock"
 
 for tool in pw-play pw-record pw-cli pw-dump wpctl ffmpeg python3; do
     command -v "$tool" > /dev/null || { echo "manca $tool"; exit 1; }
@@ -80,7 +87,7 @@ cleanup() {
     [ -n "$node_pid" ] && stop "$node_pid"
     id=$(node_id "$NULL")
     [ -n "$id" ] && pw-cli destroy "$id" > /dev/null 2>&1
-    rm -f "$REC" "$FIFO"
+    rm -f "$REC" "$FIFO" "$SOCK"
 }
 trap cleanup EXIT
 
@@ -204,16 +211,25 @@ if [ "$WHAT" = cambi ] || [ "$WHAT" = tutto ]; then
         for c in $changes; do offline_args+=(--change "${c%%:*}:$dir/${c#*:}"); done
         "$OFFLINE" --dll "$DLL" --capture "$dir" --volume-db -9.3428 "${offline_args[@]}" \
             "$FASE4/cambio71.wav" "$out/offline.wav" > "$out/offline.log" 2>&1
-        start "$dir" "$out/node.log" --control "$FIFO" || { fail=$((fail + 1)); continue; }
+        ctl=(--control "$FIFO")
+        [ -n "$SOCKET" ] && ctl=(--socket "$SOCK")
+        start "$dir" "$out/node.log" "${ctl[@]}" || { fail=$((fail + 1)); continue; }
+        refused=0
         for c in $changes; do
             target="$dir/${c#*:}"
             [ -n "$PROFILE" ] && target=$("$OSBLOB" import "$target")
-            echo "profilo $target frame ${c%%:*}" > "$FIFO"
+            if [ -n "$SOCKET" ]; then
+                "$OSCTL" --socket "$SOCK" profilo "$target" frame "${c%%:*}" >> "$out/os-ctl.txt" 2>&1 || refused=$((refused + 1))
+            else
+                echo "profilo $target frame ${c%%:*}" > "$FIFO"
+            fi
         done
+        [ -n "$SOCKET" ] && "$OSCTL" --socket "$SOCK" stato >> "$out/os-ctl.txt" 2>&1
         sleep 0.5
         play "$sig"
         finish "$out/node.wav"
         e=$(errors "$out/node.log")
+        [ "$refused" -gt 0 ] && e="$e+rifiutati$refused"
         n=$(grep '^\[nodo\]' "$out/node.log" | tail -1 | grep -oP 'cambi di profilo \K[0-9]+')
         "$WAVCMP" --onset --segments 1 "$dir/loopback.wav" "$out/node.wav" > "$out/wavcmp.txt" 2>&1
         "$WAVCMP" --onset "$out/offline.wav" "$out/node.wav" > "$out/wavcmp-offline.txt" 2>&1
