@@ -99,7 +99,8 @@ pub struct Custom {
 }
 
 impl Default for Custom {
-    /// Lo stato catturato come "Predefinito" di Person. 2 e 3.
+    /// Il "Predefinito" dei Personalizzati: catturato per Person. 1 e 2 (W1), ed è anche lo
+    /// stato iniziale di Person. 2 e 3 nei 19 stati.
     fn default() -> Self {
         Custom { virtualizer: true, leveler: false, geq: [0; 10] }
     }
@@ -137,6 +138,20 @@ impl Profile {
             Profile::Music { .. } => 3,
             Profile::Voice => 4,
             Profile::Custom { slot, .. } => 4 + *slot as i32,
+        }
+    }
+
+    /// Lo stato che dà il pulsante "Predefinito" dell'app per lo stesso profilo (catture W1,
+    /// doc 12.14): Gaming → Modalità performance (IEQ spento), Film → IEQ Non attivo, Musica →
+    /// Equilibrato, Personalizzati → [`Custom::default`] nello stesso slot (Person. 1 e 2
+    /// catturati, Person. 3 per analogia). Voce non ha controlli: resta Voce.
+    pub fn factory_default(&self) -> Profile {
+        match self {
+            Profile::Gaming { .. } => Profile::Gaming { ieq: Ieq::Off },
+            Profile::Film { .. } => Profile::Film { ieq: Ieq::Off },
+            Profile::Music { .. } => Profile::Music { ieq: Ieq::Balanced },
+            Profile::Voice => Profile::Voice,
+            Profile::Custom { slot, .. } => Profile::Custom { slot: *slot, settings: Custom::default() },
         }
     }
 
