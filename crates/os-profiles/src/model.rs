@@ -68,9 +68,9 @@ const GEQ_ANCHORS: [usize; 10] = [0, 1, 2, 3, 4, 7, 10, 13, 16, 18];
 /// Espande i 10 slider del GEQ (1/16 dB) nelle 20 bande del blob: le bande ancora prendono il
 /// valore dello slider, le intermedie sono interpolate linearmente in frequenza fra le due
 /// ancore vicine e l'ultima è estrapolata dalle ultime due, con arrotondamento all'intero più
-/// vicino. Ricavata dall'unico GEQ non piatto catturato (Person. 1, doc 12.14 esito di L2), dove
-/// riproduce tutte le 10 bande non ancora; da confermare con le catture di W1 (pareggi
-/// nell'arrotondamento, frequenze esatte).
+/// vicino, limitato a ±[`GEQ_RANGE`] (conta solo per l'estrapolazione: le interpolate stanno
+/// fra due slider). Ricavata da Person. 1 (doc 12.14, esito di L2); il limite da `w1-geq-b`
+/// (W1), dove la 19688 Hz estrapolata varrebbe 290 e Dolby Access scrive 192.
 pub fn geq_expand(sliders: &[i32; 10]) -> [i32; 20] {
     let mut out = [0; 20];
     for (band, out) in out.iter_mut().enumerate() {
@@ -79,10 +79,13 @@ pub fn geq_expand(sliders: &[i32; 10]) -> [i32; 20] {
         let (a, b) = (GEQ_ANCHORS[seg], GEQ_ANCHORS[seg + 1]);
         let (fa, fb, f) = (BANDS_HZ[a] as f64, BANDS_HZ[b] as f64, BANDS_HZ[band] as f64);
         let (ga, gb) = (sliders[seg] as f64, sliders[seg + 1] as f64);
-        *out = (ga + (gb - ga) * (f - fa) / (fb - fa)).round() as i32;
+        *out = ((ga + (gb - ga) * (f - fa) / (fb - fa)).round() as i32).clamp(-GEQ_RANGE, GEQ_RANGE);
     }
     out
 }
+
+/// Escursione degli slider del GEQ in 1/16 dB (±12 dB; `CustomGainRange` di `settings.json`).
+pub const GEQ_RANGE: i32 = 192;
 
 /// Impostazioni di un profilo Personalizzato.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -458,6 +461,10 @@ mod tests {
         let blob = [-145, -113, -43, 0, -31, -32, -33, -34, -35, -37, -39, -2, 34, 80, 74, 67, 57, 54, 50, 42];
         assert_eq!(geq_expand(&sliders), blob);
         assert_eq!(geq_expand(&[0; 10]), [0; 20]);
+        // w1-geq-b (W1): la 19688 Hz estrapolata (290) è limitata a 192.
+        let sliders = [-117, -83, -26, 99, -52, -40, 155, -131, 75, 173];
+        let blob = [-117, -83, -26, 99, -52, -48, -44, -40, 5, 65, 155, 67, -21, -131, -77, -15, 75, 120, 173, 192];
+        assert_eq!(geq_expand(&sliders), blob);
     }
 
     #[test]

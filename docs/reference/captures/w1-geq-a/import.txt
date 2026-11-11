@@ -1,0 +1,1 @@
+custom2:virt=on:leveler=off:geq=-19,37,55,-64,22,94,68,-35,-8,55
