@@ -1,0 +1,22 @@
+# Nodo PipeWire di open-surround come servizio utente (fase 6, doc 12.15, L4).
+# Lo installa dist/linux/install.sh; a mano: copiarlo in ~/.config/systemd/user/, poi
+#   systemctl --user daemon-reload && systemctl --user enable --now open-surround
+# Parte dal profilo attivo salvato da os-ui e riceve i cambi sul socket di controllo.
+
+[Unit]
+Description=open-surround: Dolby Atmos for Headphones su PipeWire
+Documentation=https://github.com/giacomomicoli/open-surround
+After=pipewire.service wireplumber.service
+BindsTo=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/os-pipewire \
+    --settings %h/.config/open-surround/settings.json \
+    --socket %t/open-surround/control.sock \
+    --dll %h/.local/share/open-surround/DolbyAudioProcessing.dll
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=pipewire.service
