@@ -16,14 +16,13 @@ graphic equalizer, volume leveler, virtualizer) and no audible difference.
 > signals and on 194 s of real 5.1 audio alike, with graph quanta of 1024 and 480 frames. Like
 > Windows, the node starts a fresh module for every listening session, applies a profile change to
 > the running module through `HandleNotification`, and routes streams that follow the default
-> sink to the games or the applications sink by their channel count. Profiles are still taken
-> from captures made on Windows: the profile model and the user interface are phases 5 and 6.
-> Phase 5 is in progress on Linux (section 12.14 of the analysis): a profile model with the
-> controls of the app (`os-profiles`) generates the Dolby context of all 19 captured states byte
-> for byte identical to what Dolby Access writes, and imports captured blobs back into a profile.
-> The node and the offline renderer take a profile (`--profile film:warm`) instead of a capture,
-> with output byte for byte identical in all 77 regression cases. What remains is confirming the
-> graphic equalizer mapping on more captures from Windows.
+> sink to the games or the applications sink by their channel count. Phase 5 is done (section
+> 12.14 of the analysis): a profile model with the controls of the app (`os-profiles`) generates
+> the Dolby context byte for byte identical to what Dolby Access writes, for all 19 captured
+> states and 17 targeted captures (graphic equalizer, switches, "Default" buttons), and imports
+> captured blobs back into a profile. The node and the offline renderer take a profile
+> (`--profile film:warm`) instead of a capture, with output byte for byte identical in all 77
+> regression cases. Next is phase 6, the user interface.
 
 ## Verified results
 
@@ -279,7 +278,7 @@ is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three fol
 | 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
 | 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
 | 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | done (2026-11-06): `os-pipewire`; all 77 cases (74 synthetic, 3 real-audio tracks) recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB) and are bit-identical to the offline render at graph quanta of 1024 and 480 frames; volume after the module; the node adds only the module's 512 frames of latency. From an ETW trace of the real module on Windows: a fresh module for every session (verified on the node at −148.9 dB), live profile changes through `HandleNotification` on the same instance (2 of the 3 recorded changes at −148.9 dB over the whole track, the virtualizer switch differs only during its 22 ms crossfade), automatic routing of games and applications by channel count |
-| 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | in progress (section 12.14 of the analysis). Done on Linux (2026-11-09): codec of the six Dolby context values, profile model generating all 19 captured states byte for byte and importing captures back, `--profile` in the offline renderer and the node with output identical to the captures in all 77 regression cases. Next: one capture session on Windows (graphic equalizer mapping, missing states and defaults), then the final check on Linux |
+| 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | done (2026-11-11, section 12.14 of the analysis): codec of the six Dolby context values; profile model generating all 19 captured states and the 17 targeted Windows captures (graphic equalizer 10 → 20 bands, switches, "Default" buttons) byte for byte, and importing captures back; `--profile` in the offline renderer and the node with output identical to the captures in all 77 regression cases; each profile's default for the UI |
 | 6 | User interface with the same controls as Dolby Access, on both platforms | planned |
 
 Acceptance for phases 3-4: the same inputs and blobs give a residual of about −149 dB against the
