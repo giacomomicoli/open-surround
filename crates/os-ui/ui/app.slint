@@ -1,0 +1,241 @@
+// Finestra di open-surround (fase 6, doc 12.15, L3): gli stessi controlli di Dolby Access.
+// La logica è in os_profiles::Settings; qui ci sono solo la disposizione e i callback.
+
+import { Button, Switch, Slider, VerticalBox, HorizontalBox, GroupBox, Palette } from "std-widgets.slint";
+
+export struct Band {
+    hz: string,
+    value: float, // 1/16 dB, −192 … 192
+}
+
+component ProfileButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    callback clicked;
+    height: 40px;
+    border-radius: 6px;
+    background: selected ? Palette.accent-background : (ta.has-hover ? Palette.alternate-background : transparent);
+    accessible-role: button;
+    accessible-label: text;
+    accessible-checkable: true;
+    accessible-checked: selected;
+    accessible-action-default => { root.clicked(); }
+    Text {
+        x: 14px;
+        text: root.text;
+        vertical-alignment: center;
+        font-size: 14px;
+        font-weight: selected ? 600 : 400;
+        color: selected ? Palette.accent-foreground : Palette.foreground;
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Pulsante di un preset. Non usa il Button "checkable" di Slint, che al clic cambia da solo il
+// proprio stato e smette di seguire `selected`: un preset cliccato restava acceso anche dopo
+// averne scelto un altro o cambiato profilo (prova a mano del 12/11/2026).
+component PresetButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected;
+    in property <bool> active: true;
+    callback clicked;
+    height: 34px;
+    horizontal-stretch: 1;
+    border-radius: 4px;
+    opacity: active ? 1 : 0.4;
+    background: selected ? Palette.accent-background : (ta.has-hover && active ? Palette.control-background.darker(0.1) : Palette.control-background);
+    border-width: 1px;
+    border-color: selected ? Palette.accent-background : Palette.border;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-enabled: active;
+    accessible-checkable: true;
+    accessible-checked: selected;
+    accessible-action-default => { if active { root.clicked(); } }
+    Text {
+        text: root.text;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        color: selected ? Palette.accent-foreground : Palette.control-foreground;
+    }
+    ta := TouchArea {
+        enabled: root.active;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "open-surround";
+    preferred-width: 860px;
+    preferred-height: 560px;
+    min-width: 720px;
+    min-height: 480px;
+
+    in property <[string]> profiles;
+    in property <int> active;
+    // 0 Gaming, 1 Film, 2 Musica, 3 Voce, 4-6 Personalizzati (ordine di Kind::ALL)
+    // Legati in due direzioni agli interruttori: un interruttore cliccato cambia da solo il
+    // proprio `checked`, e con un legame in una sola direzione smetterebbe di seguire il
+    // profilo (Person. 1 → Person. 2 mostrava ancora i valori di Person. 1).
+    in-out property <bool> performance;
+    // preset IEQ nell'ordine dell'app: 0 Dettagliato, 1 Equilibrato, 2 Caldo, 3 Non attivo
+    in property <int> ieq;
+    in-out property <bool> virtualizer;
+    in-out property <bool> leveler;
+    in property <[Band]> geq;
+    in property <string> node-status;
+    in property <bool> node-ok;
+    in property <string> error;
+
+    callback select(int);
+    callback set-performance(bool);
+    callback set-ieq(int);
+    callback set-virtualizer(bool);
+    callback set-leveler(bool);
+    callback set-geq(int, float);
+    callback reset();
+
+    property <bool> has-ieq: active <= 2 && !(active == 0 && performance);
+    property <bool> custom: active >= 4;
+
+    HorizontalLayout {
+        // Profili
+        Rectangle {
+            width: 200px;
+            background: Palette.alternate-background;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 4px;
+                Text {
+                    text: "Profili";
+                    font-size: 12px;
+                    color: Palette.foreground;
+                    opacity: 0.7;
+                }
+                for name[i] in root.profiles: ProfileButton {
+                    text: name;
+                    selected: i == root.active;
+                    clicked => { root.select(i); }
+                }
+                Rectangle { }
+            }
+        }
+
+        // Controlli del profilo attivo
+        VerticalBox {
+            padding: 20px;
+            spacing: 14px;
+            HorizontalLayout {
+                Text {
+                    text: root.profiles[root.active];
+                    font-size: 22px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                if root.active != 3: Button {
+                    text: "Predefinito";
+                    clicked => { root.reset(); }
+                }
+            }
+
+            if root.active == 0: Switch {
+                text: "Modalità performance";
+                checked <=> root.performance;
+                toggled => { root.set-performance(root.performance); }
+            }
+
+            if root.active <= 2: GroupBox {
+                title: "Equalizzatore intelligente";
+                enabled: root.has-ieq;
+                vertical-stretch: 0;
+                HorizontalLayout {
+                    spacing: 8px;
+                    for name[i] in ["Dettagliato", "Equilibrato", "Caldo", "Non attivo"]: PresetButton {
+                        text: name;
+                        selected: root.has-ieq && i == root.ieq;
+                        active: root.has-ieq;
+                        clicked => { root.set-ieq(i); }
+                    }
+                }
+            }
+
+            if root.active == 3: Text {
+                text: "Il profilo Voce non ha impostazioni.";
+                opacity: 0.7;
+            }
+
+            if root.custom: HorizontalLayout {
+                spacing: 24px;
+                Switch {
+                    text: "Virtualizzatore surround";
+                    checked <=> root.virtualizer;
+                    toggled => { root.set-virtualizer(root.virtualizer); }
+                }
+                Switch {
+                    text: "Livellatore del volume";
+                    checked <=> root.leveler;
+                    toggled => { root.set-leveler(root.leveler); }
+                }
+            }
+
+            if root.custom: GroupBox {
+                title: "Equalizzatore grafico (±12 dB)";
+                vertical-stretch: 1;
+                HorizontalLayout {
+                    spacing: 4px;
+                    for band[i] in root.geq: VerticalLayout {
+                        spacing: 4px;
+                        Text {
+                            text: (band.value > 0 ? "+" : "") + round(band.value * 100 / 16) / 100;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                        }
+                        Slider {
+                            orientation: vertical;
+                            minimum: -192;
+                            maximum: 192;
+                            step: 1;
+                            value: band.value;
+                            accessible-label: band.hz + " Hz";
+                            changed(v) => { root.set-geq(i, v); }
+                        }
+                        Text {
+                            text: band.hz;
+                            font-size: 11px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            if !root.custom: Rectangle { vertical-stretch: 1; }
+
+            // Stato del nodo
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 5px;
+                    background: root.node-ok ? #2e9e5b : #c0392b;
+                }
+                Text {
+                    text: root.node-status;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+            if root.error != "": Text {
+                text: root.error;
+                font-size: 12px;
+                color: #c0392b;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
