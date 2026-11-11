@@ -218,12 +218,33 @@ mod tests {
             assert_eq!(teb::last_error(), ERROR_NOACCESS);
             assert_eq!(virtual_protect(base as *mut c_void, 1, 0x1234, &mut old), 0);
             assert_eq!(teb::last_error(), ERROR_INVALID_PARAMETER);
+            // Prima i record, poi il munmap: dopo, un altro test può ricevere lo stesso indirizzo.
+            PROTECTIONS.lock().unwrap().retain(|&p, _| p < base || p >= base + 2 * PAGE);
             libc::munmap(base as *mut c_void, 2 * PAGE);
-            // pagina non mappata
-            assert_eq!(virtual_protect(base as *mut c_void, 1, 0x04, &mut old), 0);
-            assert_eq!(teb::last_error(), ERROR_INVALID_ADDRESS);
         }
-        PROTECTIONS.lock().unwrap().retain(|&p, _| p < base || p >= base + 2 * PAGE);
+    }
+
+    /// Pagina non mappata. Si usa una pagina sotto `vm.mmap_min_addr` (64 KiB di default), che
+    /// nessun mmap del processo può ottenere: prima il test la provava sull'indirizzo appena
+    /// liberato con munmap, ma i test girano in parallelo e un altro thread poteva mapparci
+    /// sopra fra il munmap e la chiamata (2 fallimenti su 8 esecuzioni, doc 12.15).
+    #[test]
+    fn unmapped_page() {
+        teb::install();
+        const UNMAPPED: usize = 0x1000;
+        assert_eq!(protection_from_maps(UNMAPPED), None, "pagina 0x1000 mappata: vm.mmap_min_addr è 0?");
+        let mut old = 0u32;
+        unsafe {
+            assert_eq!(virtual_protect(UNMAPPED as *mut c_void, 1, 0x04, &mut old), 0);
+            assert_eq!(teb::last_error(), ERROR_INVALID_ADDRESS);
+            // Anche con una protezione registrata (come quella di una vista chiusa) mprotect
+            // fallisce e l'errore è lo stesso.
+            record_protection(UNMAPPED, PAGE, 0x04);
+            let r = virtual_protect(UNMAPPED as *mut c_void, 1, 0x02, &mut old);
+            let e = teb::last_error();
+            PROTECTIONS.lock().unwrap().remove(&UNMAPPED);
+            assert_eq!((r, e), (0, ERROR_INVALID_ADDRESS));
+        }
     }
 
     #[test]
