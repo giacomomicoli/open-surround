@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=open-surround
+GenericName=Dolby Atmos for Headphones
+Comment=Profili ed equalizzatore di Dolby Atmos for Headphones su Linux
+Exec=os-ui
+Icon=audio-headphones
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=dolby;atmos;surround;equalizzatore;cuffie;
