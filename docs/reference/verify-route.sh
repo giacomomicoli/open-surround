@@ -14,7 +14,7 @@
 set -u
 cd "$(dirname "$0")/../.."
 
-DLL="${1:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
+DLL="${1:-$HOME/.local/share/open-surround/DolbyAudioProcessing.dll}"
 NODE=target/debug/os-pipewire
 OUT=target/verify-route
 PREFIX=os-verify

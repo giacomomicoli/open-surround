@@ -6,7 +6,7 @@
 #
 # Uso:
 #   docs/reference/regress-linux.sh [DLL] [filtro-profilo]
-#     DLL            DolbyAudioProcessing.dll (default ~/Documenti/dolby-bins/…)
+#     DLL            DolbyAudioProcessing.dll (default ~/.local/share/open-surround/…, dove lo copia install.sh)
 #     filtro-profilo elabora solo le cartelle il cui nome contiene la stringa
 #   QUANTUM=<n> docs/reference/regress-linux.sh …
 #     fase 4: fa passare ogni caso dall'adattatore del tempo reale a cicli di n frame
@@ -23,7 +23,7 @@
 set -u
 cd "$(dirname "$0")/../.."
 
-DLL="${1:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
+DLL="${1:-$HOME/.local/share/open-surround/DolbyAudioProcessing.dll}"
 FILTER="${2:-}"
 QUANTUM="${QUANTUM:-}"
 PROFILE="${PROFILE:-}"

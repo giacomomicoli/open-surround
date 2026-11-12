@@ -31,9 +31,15 @@ Updates: an install made with ./install.sh updates itself from the window ("Aggi
     os-update apply
   The package is verified with its minisign signature and SHA-256 before anything is replaced.
 
-Then make "open-surround stereo" (applications) your default output, and send games with 7.1
-output to "open-surround 7.1". Settings are kept in ~/.config/open-surround/settings.json,
-shared by the two ways of running it.
+Then make "open-surround stereo" (applications) your default output in your sound settings, or
+"open-surround 7.1" if you mostly play games: when one of the two is the default, streams with
+more than two channels go to the 7.1 one by themselves. The processed sound goes on to your
+headphones by itself. Settings are kept in ~/.config/open-surround/settings.json, shared by the
+two ways of running it.
+
+The window is in Italian for now; its labels match Dolby Access (Film = Movie, Musica = Music,
+Voce = Voice, Personalizzato = Custom, Predefinito = Default, Aggiorna = Update).
+More: https://github.com/giacomomicoli/open-surround#readme
 
 Contents
     open-surround         launcher (node + window)
