@@ -38,9 +38,11 @@ segnali per canale descrivono di fatto i suoi filtri HRTF.
 - Le note nuove di analisi e gli esiti delle verifiche vanno in `private/analisi-dolby-access.md`:
   commit e push nel submodule (`private/`, branch `main`), poi commit del puntatore aggiornato nel
   repository pubblico.
-- Identità dei commit, in entrambi i repository: `Giacomo Micoli <dev@fakejack.mozmail.com>`, mai
-  l'indirizzo personale, anche se è quello del contesto git:
-  `git -c user.name="Giacomo Micoli" -c user.email=dev@fakejack.mozmail.com commit …`.
+- Identità dei commit, in entrambi i repository: `Giacomo Micoli <159612219+giacomomicoli@users.noreply.github.com>`
+  (noreply di GitHub), mai l'indirizzo personale, anche se è quello del contesto git:
+  `git -c user.name="Giacomo Micoli" -c user.email=159612219+giacomomicoli@users.noreply.github.com commit …`.
+  L'account blocca i push con gli indirizzi registrati, compreso `dev@fakejack.mozmail.com`
+  usato fino al 12/11/2026 ("push declined due to email privacy restrictions").
 - Push via HTTPS: `git -c credential.helper='!gh auth git-credential' push …` (SSH non funziona).
 - Il DLL usato dagli script e dai test è quello installato,
   `~/.local/share/open-surround/DolbyAudioProcessing.dll` (DAP 7.3.7, SHA-256 `0fada402…4e715`).
