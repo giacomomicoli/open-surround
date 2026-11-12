@@ -7,6 +7,8 @@ use crate::teb;
 const S_OK: i32 = 0;
 const S_FALSE: i32 = 1;
 const E_NOINTERFACE: i32 = 0x8000_4002u32 as i32;
+const E_POINTER: i32 = 0x8000_4003u32 as i32;
+const E_INVALIDARG: i32 = 0x8007_0057u32 as i32;
 const VT_EMPTY: u16 = 0;
 const VT_LPWSTR: u16 = 0x1F;
 const VT_CLSID: u16 = 0x48; // 72
@@ -99,19 +101,21 @@ pub(crate) unsafe extern "win64" fn string_from_guid2(guid: *const u8, dst: *mut
 
 /// IUnknown minimo: QI risponde solo IUnknown/IMarshal con E_NOINTERFACE per il resto
 /// (nessun marshalling tra apartment avviene nel nostro host).
+/// `out` nullo: E_POINTER senza scrivere (prima veniva scritto senza controllo).
 pub(crate) unsafe extern "win64" fn ftm_query_interface(this: *mut c_void, iid: *const u8, out: *mut *mut c_void) -> i32 {
-    let _ = this;
-    unsafe { out.write(std::ptr::null_mut()) };
-    if iid.is_null() {
-        return 0x8007_0057u32 as i32; // E_INVALIDARG
+    if out.is_null() {
+        return E_POINTER;
     }
     const IID_IUNKNOWN: [u8; 16] = guid_bytes(0x0000_0000_0000_0000_c000_0000_0000_0046);
     const IID_IMARSHAL: [u8; 16] = guid_bytes(0x0000_0003_0000_0000_c000_0000_0000_0046);
-    if unsafe { std::slice::from_raw_parts(iid, 16) } == IID_IUNKNOWN || unsafe { std::slice::from_raw_parts(iid, 16) } == IID_IMARSHAL {
-        unsafe { out.write(this) };
-        return S_OK;
-    }
-    E_NOINTERFACE
+    let (hr, found) = if iid.is_null() {
+        (E_INVALIDARG, std::ptr::null_mut())
+    } else {
+        let iid = unsafe { std::slice::from_raw_parts(iid, 16) };
+        if iid == IID_IUNKNOWN || iid == IID_IMARSHAL { (S_OK, this) } else { (E_NOINTERFACE, std::ptr::null_mut()) }
+    };
+    unsafe { out.write(found) };
+    hr
 }
 
 pub(crate) unsafe extern "win64" fn ftm_add_ref(_this: *mut c_void) -> u32 {
@@ -261,3 +265,32 @@ pub(crate) unsafe extern "win64" fn oleaut32_set_error_info(_reserved: u32, _err
 const _: () = {
     let _ = VT_EMPTY;
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IID_IUNKNOWN: [u8; 16] = guid_bytes(0x0000_0000_0000_0000_c000_0000_0000_0046);
+    const IID_IMARSHAL: [u8; 16] = guid_bytes(0x0000_0003_0000_0000_c000_0000_0000_0046);
+    const IID_OTHER: [u8; 16] = guid_bytes(0x1234_5678_0000_0000_0000_0000_0000_0001);
+
+    #[test]
+    fn ftm_query_interface_out_and_iid() {
+        let this = 0x1000 as *mut c_void;
+        let mut out: *mut c_void = std::ptr::dangling_mut::<c_void>();
+        unsafe {
+            // `out` nullo: E_POINTER, nessuna scrittura (prima era un accesso a 0).
+            assert_eq!(ftm_query_interface(this, IID_IUNKNOWN.as_ptr(), std::ptr::null_mut()), E_POINTER);
+            assert_eq!(ftm_query_interface(this, IID_IUNKNOWN.as_ptr(), &mut out), S_OK);
+            assert_eq!(out, this);
+            out = std::ptr::dangling_mut::<c_void>();
+            assert_eq!(ftm_query_interface(this, IID_IMARSHAL.as_ptr(), &mut out), S_OK);
+            assert_eq!(out, this);
+            assert_eq!(ftm_query_interface(this, IID_OTHER.as_ptr(), &mut out), E_NOINTERFACE);
+            assert!(out.is_null());
+            out = std::ptr::dangling_mut::<c_void>();
+            assert_eq!(ftm_query_interface(this, std::ptr::null(), &mut out), E_INVALIDARG);
+            assert!(out.is_null());
+        }
+    }
+}
