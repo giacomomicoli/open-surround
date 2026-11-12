@@ -231,6 +231,10 @@ struct Stats {
     held_max: AtomicUsize,
     /// Salti nel numero di ciclo visto da un sink fra due esecuzioni (cicli persi).
     skipped: AtomicU64,
+    /// Cicli con i frame d'ingresso diversi da quelli chiesti dall'uscita (cambio di quantum),
+    /// e frame d'uscita scartati dallo Streamer perché la coda era piena.
+    mismatched: AtomicU64,
+    overflows: AtomicU64,
 }
 
 /// Condiviso tra i callback dei tre flussi (thread real time e thread principale).
@@ -407,6 +411,12 @@ impl Shared {
             }
         }
         let frames = if requested > 0 { requested } else { in_frames }.min(room);
+        // Al modulo vanno i frame arrivati dai sink, non quelli chiesti dall'uscita: al cambio
+        // di quantum per un ciclo sono diversi (doc 12.15, "Instabilità all'avvio delle sessioni").
+        let input_frames = if present.iter().any(|&p| p) { in_frames } else { frames };
+        if input_frames != frames {
+            self.stats.mismatched.fetch_add(1, Ordering::Relaxed);
+        }
         self.stats.quantum.store(frames, Ordering::Relaxed);
         self.stats.in_frames.store(in_frames, Ordering::Relaxed);
 
@@ -424,7 +434,7 @@ impl Shared {
         let (l, r) = datas.split_at_mut(1);
         let left = unsafe { std::slice::from_raw_parts_mut(l[0].data as *mut f32, frames) };
         let right = unsafe { std::slice::from_raw_parts_mut(r[0].data as *mut f32, frames) };
-        if rt.streamer.process(frames, sources, volume, [left, right]).is_err() {
+        if rt.streamer.process_io(input_frames, sources, volume, [left, right]).is_err() {
             self.stats.errors.fetch_add(1, Ordering::Relaxed);
             left.fill(0.0);
             right.fill(0.0);
@@ -432,6 +442,7 @@ impl Shared {
         self.latency.store(rt.streamer.latency(), Ordering::Relaxed);
         self.stats.resets.store(rt.streamer.resets(), Ordering::Relaxed);
         self.stats.changes.store(rt.streamer.changes(), Ordering::Relaxed);
+        self.stats.overflows.store(rt.streamer.overflows(), Ordering::Relaxed);
         self.stats.idle.store(rt.streamer.is_idle(), Ordering::Relaxed);
         for d in datas.iter_mut().take(2) {
             let chunk = unsafe { &mut *d.chunk };
@@ -827,7 +838,7 @@ pub fn run(args: Args) -> Result<()> {
             let s = &sh_t.stats;
             let cycles = s.cycles.load(Ordering::Relaxed);
             eprintln!(
-                "[nodo] cicli {} (+{}), quantum {} (ciclo del grafo {}, ingresso {}), sink eseguiti {}/{} (attese {}, partenze {}, cicli saltati {}, cicli da parte max {}, scartati {}), giochi {} (vuoti {}), app {} (vuoti {}), modulo {}, riconfigurazioni {}, cambi di profilo {}, senza buffer d'uscita {}, errori {}, trigger falliti {}, process max {:.3} ms",
+                "[nodo] cicli {} (+{}), quantum {} (ciclo del grafo {}, ingresso {}), sink eseguiti {}/{} (attese {}, partenze {}, cicli saltati {}, cicli da parte max {}, scartati {}, ingresso diverso dall'uscita {}, uscita scartata {}), giochi {} (vuoti {}), app {} (vuoti {}), modulo {}, riconfigurazioni {}, cambi di profilo {}, senza buffer d'uscita {}, errori {}, trigger falliti {}, process max {:.3} ms",
                 cycles,
                 cycles - last_cycles.get(),
                 s.quantum.load(Ordering::Relaxed),
@@ -840,6 +851,8 @@ pub fn run(args: Args) -> Result<()> {
                 s.skipped.load(Ordering::Relaxed),
                 s.held_max.load(Ordering::Relaxed),
                 s.dropped.load(Ordering::Relaxed),
+                s.mismatched.load(Ordering::Relaxed),
+                s.overflows.load(Ordering::Relaxed),
                 s.present[GAMES].load(Ordering::Relaxed),
                 s.empty[GAMES].load(Ordering::Relaxed),
                 s.present[APPS].load(Ordering::Relaxed),
