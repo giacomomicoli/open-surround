@@ -6,7 +6,7 @@
 # Uso (da build debug):
 #   gdb -q -batch -x docs/reference/trace-shims.gdb --args target/debug/os-dap-linux \
 #       --capture target/verify/gaming-performance/stereo \
-#       --dll ~/Documenti/dolby-bins/DolbyAudioProcessing.dll --volume-db -9.3428 \
+#       --dll ~/.local/share/open-surround/DolbyAudioProcessing.dll --volume-db -9.3428 \
 #       target/verify/signals/stereo.wav /tmp/out.wav 2>&1 | grep '^\[trace\]' | sort | uniq -c
 #
 # Risultati e confronto con la prima esecuzione: doc sez. 12.12, tabella in testa.

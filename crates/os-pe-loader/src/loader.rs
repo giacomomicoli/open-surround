@@ -269,9 +269,11 @@ mod tests {
 
     #[test]
     fn parse_headers() {
-        let path = std::path::PathBuf::from(
-            std::env::var("OS_DAP_DLL").unwrap_or_else(|_| "/home/user/Documenti/dolby-bins/DolbyAudioProcessing.dll".into()),
-        );
+        let path = match std::env::var_os("OS_DAP_DLL") {
+            Some(p) => std::path::PathBuf::from(p),
+            None => std::path::Path::new(&std::env::var_os("HOME").unwrap_or_default())
+                .join(".local/share/open-surround/DolbyAudioProcessing.dll"),
+        };
         let Ok(data) = std::fs::read(&path) else {
             eprintln!("DLL di test assente: salto parse_headers");
             return;
