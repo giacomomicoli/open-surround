@@ -3,6 +3,8 @@ https://github.com/giacomomicoli/open-surround
 
 This package does NOT include Dolby's module. Copy your own DolbyAudioProcessing.dll (from a
 Windows install of Dolby Access) into this folder, next to the `open-surround` script.
+Where to find it on Windows, and the verified version (DAP 7.3.7, SHA-256 0fada402...4e715):
+https://github.com/giacomomicoli/open-surround#getting-the-dll
 
 Requirements: PipeWire 1.2 or newer, glibc 2.39 or newer (Debian 13, Ubuntu 25.04, Fedora 41,
 Arch and later). Ubuntu 24.04 has PipeWire 1.0, too old for the node.
