@@ -29,7 +29,7 @@ set -u
 cd "$(dirname "$0")/../.."
 
 WHAT="${1:-tutto}"
-DLL="${2:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
+DLL="${2:-$HOME/.local/share/open-surround/DolbyAudioProcessing.dll}"
 VERIFY=target/verify
 FASE4=target/verify-fase4
 OUT=target/verify-sessioni-cambi
