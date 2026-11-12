@@ -85,7 +85,8 @@ crates/
 │                  import); settings of the UI (phase 6), control socket client and os-ctl
 ├─ os-ui/          settings window (Slint), with the controls of Dolby Access
 └─ os-verify/      reference tools: ref-capture (Windows recording) and wavcmp (comparison)
-dist/linux/        systemd user unit, menu entry, install.sh
+dist/linux/        systemd user unit, menu entry, install.sh, prebuilt package (package.sh, launcher)
+.github/workflows/ release.yml: the prebuilt Linux package on every v* tag
 docs/
 ├─ analisi-dolby-access.md   full analysis: interface reconstruction, blob format, verification (Italian)
 └─ reference/                capture and verification scripts, captured profile blobs
@@ -185,6 +186,24 @@ node starts from the saved profile (`--settings`) and takes changes on its contr
 (`--socket`, `$XDG_RUNTIME_DIR/open-surround/control.sock`), so closing the window keeps the
 sound, and restarting the node keeps the profile. `os-ctl stato` prints what the node is doing.
 `dist/linux/install.sh --uninstall` removes everything except your settings and the DLL copy.
+
+### Prebuilt package (Linux x86_64, no build needed)
+
+Each `v*` tag gets `open-surround-<version>-linux-x86_64.tar.gz` on its GitHub release,
+built by `.github/workflows/release.yml` with `dist/linux/package.sh`. It does not contain
+Dolby's module: extract it, copy your `DolbyAudioProcessing.dll` into the extracted folder, then
+either
+
+```
+./open-surround        # run without installing: node + window, closing the window stops the node
+./install.sh           # or install it as above, from the package's binaries
+```
+
+`./open-surround --senza-finestra` runs only the node, `--dll <file>` takes the DLL from
+elsewhere. If a node is already running (the installed service) it opens only the window. Both
+ways share `~/.config/open-surround/settings.json`. The package is built in Debian 13 and needs
+glibc 2.39 and PipeWire 1.2 or newer. `dist/linux/package.sh` builds the same package locally (it
+then needs the glibc of the machine it was built on).
 
 ### Real time on Linux (PipeWire)
 

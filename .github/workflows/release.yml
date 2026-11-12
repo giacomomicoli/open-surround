@@ -1,0 +1,83 @@
+# Pacchetto precompilato per Linux x86_64 (doc 12.15, "Pacchetto precompilato").
+# A ogni tag v* compila con dist/linux/package.sh e allega il tar.gz alla release del tag; a mano
+# (workflow_dispatch) lascia il pacchetto come artifact dell'esecuzione. Il DLL di Dolby non c'è:
+# lo aggiunge chi scarica.
+#
+# Build in Debian 13: è la base stabile più vecchia con PipeWire >= 1.2, che serve al nodo
+# (spa_io_clock.cycle, PW_STREAM_FLAG_ASYNC). Ubuntu 22.04 e Debian 12 non compilano libspa o il
+# nodo; Ubuntu 24.04 ha PipeWire 1.0. I binari chiedono glibc 2.39.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-latest
+    container: debian:13
+    outputs:
+      version: ${{ steps.ver.outputs.v }}
+    steps:
+      - name: Dipendenze di build
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config clang libclang-dev \
+            libpipewire-0.3-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev
+
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Versione
+        id: ver
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+            echo "v=$v-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pacchetto
+        run: dist/linux/package.sh "${{ steps.ver.outputs.v }}"
+
+      - name: Prova del pacchetto (avvio dei binari, niente audio)
+        shell: bash
+        run: |
+          d=target/dist/open-surround-${{ steps.ver.outputs.v }}-linux-x86_64
+          "$d/bin/os-pipewire" --help > /dev/null
+          "$d/bin/os-ctl" --help
+          "$d/open-surround" --help
+          bash -n "$d/install.sh"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-surround-${{ steps.ver.outputs.v }}-linux-x86_64
+          path: target/dist/*.tar.gz*
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: linux-x86_64
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: open-surround-${{ needs.linux-x86_64.outputs.version }}-linux-x86_64
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" ./*.tar.gz* --clobber
