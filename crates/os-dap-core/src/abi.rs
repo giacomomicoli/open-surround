@@ -6,7 +6,7 @@ use crate::layout::NUM_BEDS;
 /// Metadati di un oggetto per un granulo (0x30 byte, letti per ogni oggetto anche se inattivo).
 /// I primi 0x1e byte sono il blocco "object info" OAMD; poi +0x20 dialog indication (0-3),
 /// +0x24 modalità di rendering cuffie (0-3), +0x28 flag 0/1, +0x2c tipo (0 = normale).
-/// Valori di default presi da DolbyHrtfEnc.dll (FUN_…).
+/// Valori di default come quelli che usa lo shell (doc sez. 12.8).
 #[repr(C, align(8))]
 #[derive(Clone, Copy)]
 pub struct GranuleMeta {
@@ -84,7 +84,7 @@ impl ObjectEntry {
     };
 }
 
-/// Primo argomento di EncodeAudioData (nello shell: CDolbyHrtfEncoderEngine+[…]).
+/// Primo argomento di EncodeAudioData.
 #[repr(C)]
 pub struct EncodeInput {
     pub entries: *mut ObjectEntry,

@@ -296,12 +296,18 @@ mod tests {
         assert_eq!(size, 17260);
         let off = pe.rva_to_offset(&data, rva).unwrap();
         assert_eq!(&data[off..off + 2], b"{\"");
-        // I default CFG del modulo sono stub no-op validi (ret / jmp rax).
-        let check = 0 /* […] */;
-        let disp_off = pe.rva_to_offset(&data, check).unwrap();
-        assert_eq!(&data[disp_off..disp_off + 3], &[0xc2, 0x00, 0x00]);
-        let dispatch = 0 /* […] */;
-        let doff = pe.rva_to_offset(&data, dispatch).unwrap();
-        assert_eq!(&data[doff..doff + 2], &[0xff, 0xe0]);
+        // I default CFG del modulo sono stub no-op validi (ret / jmp rax): li ricava dalla load
+        // config (GuardCFCheckFunctionPointer a +0x70, GuardCFDispatchFunctionPointer a +0x78,
+        // VA di uno slot che contiene la VA dello stub, non rilocata nel file).
+        let u64_at = |off: usize| u64::from_le_bytes(data[off..off + 8].try_into().unwrap());
+        let lc = pe.rva_to_offset(&data, pe.directories[pe::IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG].virtual_address).unwrap();
+        let stub = |field: usize| {
+            let slot = pe.rva_to_offset(&data, (u64_at(lc + field) - pe.image_base) as u32).unwrap();
+            pe.rva_to_offset(&data, (u64_at(slot) - pe.image_base) as u32).unwrap()
+        };
+        let check = stub(0x70);
+        assert_eq!(&data[check..check + 3], &[0xc2, 0x00, 0x00]);
+        let dispatch = stub(0x78);
+        assert_eq!(&data[dispatch..dispatch + 2], &[0xff, 0xe0]);
     }
 }
