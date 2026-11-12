@@ -312,6 +312,12 @@ real-audio ones also contain copyrighted material. The scripts expect them in `t
 | 6 | Settings window, service, installer, prebuilt package, updates | done on Linux |
 | — | Windows build of the settings window; longer listening tests | open |
 
+## Security
+
+Report vulnerabilities privately, not in public issues: see [SECURITY.md](SECURITY.md).
+Releases are signed (minisign, key in `dist/linux/minisign.pub`) and the in-app updater
+installs only signed packages; release tags cannot be moved once pushed.
+
 ## Legal
 
 open-surround is an independent project, not affiliated with or endorsed by Dolby Laboratories

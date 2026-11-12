@@ -1,0 +1,37 @@
+# Aggiornamenti delle dipendenze. Gli avvisi e le PR di sicurezza sono attivi nelle impostazioni
+# del repository; qui ci sono gli aggiornamenti di versione periodici, raggruppati per non
+# riempire la lista delle PR. Ogni PR passa dalla CI (ci.yml).
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      # os-ui fissa i-slint-backend-testing alla stessa versione esatta di slint: vanno aggiornati
+      # insieme, in un'unica PR.
+      slint:
+        patterns: ["slint", "slint-*", "i-slint-*"]
+      # pipewire e libspa seguono la versione di PipeWire richiesta dal nodo (>= 1.2): insieme.
+      pipewire:
+        patterns: ["pipewire", "pipewire-*", "libspa", "libspa-*"]
+      minori:
+        update-types: ["minor", "patch"]
+        exclude-patterns: ["slint", "slint-*", "i-slint-*", "pipewire", "pipewire-*", "libspa", "libspa-*"]
+
+  # Le action sono fissate per SHA: Dependabot aggiorna SHA e commento di versione.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]

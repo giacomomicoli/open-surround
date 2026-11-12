@@ -14,6 +14,10 @@
 
 name: release
 
+# Il token di default può solo leggere; il job release chiede contents: write.
+permissions:
+  contents: read
+
 on:
   push:
     tags: ["v*"]
@@ -33,11 +37,15 @@ jobs:
             ca-certificates curl git build-essential pkg-config clang libclang-dev \
             libpipewire-0.3-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Versione
         id: ver
@@ -58,7 +66,11 @@ jobs:
       - name: Pacchetto
         env:
           OS_GIT_COMMIT: ${{ github.sha }}
-        run: dist/linux/package.sh "${{ steps.ver.outputs.v }}"
+        run: |
+          dist/linux/package.sh "${{ steps.ver.outputs.v }}"
+          # Lo strumento di firma si compila qui, senza la chiave nell'ambiente: nel passo della
+          # firma non gira nessuna build (né build script di crate di terzi) che possa leggerla.
+          cargo build --locked -q -p os-update --example firma
 
       - name: Firma (minisign)
         shell: bash
@@ -75,9 +87,10 @@ jobs:
             echo "::warning::secret MINISIGN_KEY assente: pacchetto non firmato"
             exit 0
           fi
-          cargo run --locked -q -p os-update --example firma -- firma - "$f"
+          target/debug/examples/firma firma - "$f"
+          unset MINISIGN_KEY
           # La chiave segreta deve corrispondere alla pubblica compilata in os-update.
-          cargo run --locked -q -p os-update --example firma -- verifica dist/linux/minisign.pub "$f"
+          target/debug/examples/firma verifica dist/linux/minisign.pub "$f"
 
       - name: Prova del pacchetto (avvio dei binari, niente audio)
         shell: bash
@@ -91,7 +104,7 @@ jobs:
           "$d/open-surround" --help
           bash -n "$d/install.sh"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: open-surround-${{ steps.ver.outputs.v }}-linux-x86_64
           path: target/dist/*.tar.gz*
@@ -103,7 +116,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: open-surround-${{ needs.linux-x86_64.outputs.version }}-linux-x86_64
 
