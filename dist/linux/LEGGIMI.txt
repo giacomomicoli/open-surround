@@ -1,0 +1,34 @@
+open-surround: Dolby Atmos for Headphones on PipeWire (Linux x86_64, prebuilt)
+https://github.com/giacomomicoli/open-surround
+
+This package does NOT include Dolby's module. Copy your own DolbyAudioProcessing.dll (from a
+Windows install of Dolby Access) into this folder, next to the `open-surround` script.
+
+Requirements: PipeWire 1.2 or newer, glibc 2.39 or newer (Debian 13, Ubuntu 25.04, Fedora 41,
+Arch and later). Ubuntu 24.04 has PipeWire 1.0, too old for the node.
+
+Run without installing
+    ./open-surround
+  starts the node (sinks "open-surround 7.1 (giochi)" and "open-surround stereo
+  (applicazioni)") and the settings window; closing the window stops the node.
+    ./open-surround --senza-finestra      only the node, until Ctrl-C
+    ./open-surround --dll /path/to/DolbyAudioProcessing.dll
+  If the node is already running (for example as the installed service) it opens only the
+  window.
+
+Install into your home directory (node as a systemd user service, menu entry)
+    ./install.sh                          uses the DLL copied into this folder
+    ./install.sh /path/to/DolbyAudioProcessing.dll
+    systemctl --user enable --now open-surround
+    ./install.sh --uninstall
+  Same as dist/linux/install.sh in the repository, without building.
+
+Then make "open-surround stereo" (applications) your default output, and send games with 7.1
+output to "open-surround 7.1". Settings are kept in ~/.config/open-surround/settings.json,
+shared by the two ways of running it.
+
+Contents
+    open-surround         launcher (node + window)
+    install.sh            installer
+    bin/                  os-pipewire (node), os-ui (window), os-ctl (control), os-blob
+    share/                systemd user unit and .desktop entry used by install.sh
