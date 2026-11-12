@@ -15,6 +15,12 @@ anyhow = "1"
 # come ripiego.
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility"] }
 
+# Aggiornamenti (doc 12.15, "Aggiornamenti"): solo Linux, dove c'è l'installazione.
+[target.'cfg(target_os = "linux")'.dependencies]
+os-update = { path = "../os-update" }
+# Scelta del DLL con il portale XDG (file chooser di GNOME/KDE, anche in Flatpak), senza GTK.
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
+
 [dev-dependencies]
 # Backend di prova di Slint: clic e valori sugli elementi per etichetta accessibile, senza
 # finestra vera (test dei clic in main.rs).

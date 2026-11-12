@@ -930,7 +930,8 @@ fn open_fifo(path: &Path) -> Result<std::fs::File> {
 ///                                     profilo nuovo, sulla stessa istanza del modulo; con
 ///                                     `frame` dal blocco che inizia al frame n della sessione
 ///                                     (per la verifica)
-///   stato                             profilo attivo, stato del modulo, cambi consegnati
+///   stato                             profilo attivo, stato del modulo, cambi consegnati,
+///                                     versione e commit del nodo
 /// Sul socket ogni comando ha una riga di risposta, `ok …` oppure `errore …`.
 struct Control {
     shared: Arc<Shared>,
@@ -976,12 +977,14 @@ impl Control {
             ["stato"] => {
                 let s = &self.shared.stats;
                 Ok(format!(
-                    "profilo={} modulo={} cambi={} consegnati={} fini-sessione={}",
+                    "profilo={} modulo={} cambi={} consegnati={} fini-sessione={} versione={} commit={}",
                     self.current,
                     if s.idle.load(Ordering::Relaxed) { "fermo" } else { "in-moto" },
                     self.accepted,
                     s.changes.load(Ordering::Relaxed),
                     self.shared.sessions_ended.load(Ordering::Relaxed),
+                    os_profiles::version::VERSION,
+                    os_profiles::version::short_commit(),
                 ))
             }
             ["profilo", target, rest @ ..] => {

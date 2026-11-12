@@ -6,6 +6,7 @@
 //! ```text
 //! profilo <cartella|stato> [frame <n>]   →  ok profilo <stato>
 //! stato                                  →  ok profilo=<stato> modulo=<fermo|in-moto> cambi=<n> …
+//!                                           … versione=<x.y.z> commit=<12 caratteri>
 //! ```
 //!
 //! Gli stessi comandi del FIFO (`--control`), che resta per gli script di verifica.
@@ -79,6 +80,11 @@ pub fn send(_socket: &Path, _command: &str) -> Result<Reply> {
     bail!("il nodo esiste solo su Linux")
 }
 
+/// Il valore di un campo `chiave=valore` della risposta a `stato`.
+pub fn field<'a>(reply: &'a str, key: &str) -> Option<&'a str> {
+    reply.split(' ').find_map(|w| w.strip_prefix(key)?.strip_prefix('='))
+}
+
 /// Il comando che rende attivo uno stato del modello.
 pub fn profile_command(profile: &crate::Profile) -> String {
     format!("profilo {profile}")
@@ -95,6 +101,15 @@ mod tests {
         assert_eq!(Reply::parse("errore profilo x: sconosciuto").unwrap(), Reply::Error("profilo x: sconosciuto".into()));
         assert!(Reply::parse("boh").is_err());
         assert!(Reply::Error("x".into()).into_result().is_err());
+    }
+
+    #[test]
+    fn campi_di_stato() {
+        let r = "profilo=film:warm modulo=fermo cambi=0 versione=0.2.0 commit=0123456789ab";
+        assert_eq!(field(r, "versione"), Some("0.2.0"));
+        assert_eq!(field(r, "profilo"), Some("film:warm"));
+        assert_eq!(field(r, "prof"), None);
+        assert_eq!(field("profilo=x", "versione"), None);
     }
 
     #[cfg(unix)]

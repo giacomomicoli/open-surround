@@ -19,11 +19,17 @@ Run without installing
   window.
 
 Install into your home directory (node as a systemd user service, menu entry)
-    ./install.sh                          uses the DLL copied into this folder
+    ./install.sh                          uses the DLL copied into this folder, or else the
+                                          copy already installed
     ./install.sh /path/to/DolbyAudioProcessing.dll
     systemctl --user enable --now open-surround
     ./install.sh --uninstall
   Same as dist/linux/install.sh in the repository, without building.
+
+Updates: an install made with ./install.sh updates itself from the window ("Aggiorna"), or with
+    os-update check
+    os-update apply
+  The package is verified with its minisign signature and SHA-256 before anything is replaced.
 
 Then make "open-surround stereo" (applications) your default output, and send games with 7.1
 output to "open-surround 7.1". Settings are kept in ~/.config/open-surround/settings.json,
@@ -32,5 +38,7 @@ shared by the two ways of running it.
 Contents
     open-surround         launcher (node + window)
     install.sh            installer
-    bin/                  os-pipewire (node), os-ui (window), os-ctl (control), os-blob
+    bin/                  os-pipewire (node), os-ui (window), os-ctl (control), os-blob,
+                          os-update (updates)
+    versione.json         version and commit of the package
     share/                systemd user unit and .desktop entry used by install.sh
