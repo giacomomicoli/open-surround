@@ -84,9 +84,11 @@ crates/
 │                  values, identical byte for byte, import back, and os-blob (dump, diff, check,
 │                  import); settings of the UI (phase 6), control socket client and os-ctl
 ├─ os-ui/          settings window (Slint), with the controls of Dolby Access
+├─ os-update/      update check and signed in-place update from a GitHub release (os-update)
 └─ os-verify/      reference tools: ref-capture (Windows recording) and wavcmp (comparison)
-dist/linux/        systemd user unit, menu entry, install.sh, prebuilt package (package.sh, launcher)
-.github/workflows/ release.yml: the prebuilt Linux package on every v* tag
+dist/linux/        systemd user unit, menu entry, install.sh, prebuilt package (package.sh, launcher),
+                   minisign.pub (public key of the release signatures)
+.github/workflows/ release.yml: the signed prebuilt Linux package on every v* tag
 docs/
 ├─ analisi-dolby-access.md   full analysis: interface reconstruction, blob format, verification (Italian)
 └─ reference/                capture and verification scripts, captured profile blobs
@@ -207,8 +209,11 @@ systemctl --user enable --now open-surround
 ```
 
 `install.sh` builds in release mode and installs into your home directory only:
-- `os-pipewire`, `os-ui`, `os-ctl` and `os-blob` into `~/.local/bin`;
-- a copy of the DLL into `~/.local/share/open-surround`;
+- `os-pipewire`, `os-ui`, `os-ctl`, `os-blob` and `os-update` into `~/.local/bin`;
+- a copy of the DLL into `~/.local/share/open-surround` (without an argument it keeps the copy
+  already installed);
+- `~/.local/share/open-surround/installed.json`: version, commit, where the install comes from
+  (`repo` or `release`) and the SHA-256 of the DLL;
 - the user unit `open-surround.service`;
 - the `open-surround` menu entry.
 
@@ -224,7 +229,8 @@ profiles' virtualizer, volume leveler and 10-band graphic equalizer, and "Defaul
 is saved to `~/.config/open-surround/settings.json` and sent to the running node at once. The
 node starts from the saved profile (`--settings`) and takes changes on its control socket
 (`--socket`, `$XDG_RUNTIME_DIR/open-surround/control.sock`), so closing the window keeps the
-sound, and restarting the node keeps the profile. `os-ctl stato` prints what the node is doing.
+sound, and restarting the node keeps the profile. `os-ctl stato` prints what the node is doing,
+`os-ctl versione` the version and commit of `os-ctl` and of the running node.
 `dist/linux/install.sh --uninstall` removes everything except your settings and the DLL copy.
 
 ### Prebuilt package (Linux x86_64, no build needed)
@@ -256,6 +262,40 @@ elsewhere. If a node is already running (the installed service) it opens only th
 ways share `~/.config/open-surround/settings.json`. The package is built in Debian 13 and needs
 glibc 2.39 and PipeWire 1.2 or newer. `dist/linux/package.sh` builds the same package locally (it
 then needs the glibc of the machine it was built on).
+
+### Updating
+
+The window checks GitHub for a newer release when it starts, at most once a day ("Controlla
+all'avvio" turns it off), and on "Cerca aggiornamenti". The check is one anonymous HTTPS request
+to the GitHub releases API; nothing about you or your system is sent. When there is a newer
+release, a banner shows its version and release notes.
+
+- **Installed from a release package** (`./install.sh` from the extracted package):
+  "Aggiorna" installs it in place and reopens the window. The same from a terminal:
+
+  ```
+  os-update check
+  os-update apply
+  ```
+
+  `os-update apply` downloads the package into `~/.cache/open-surround/`, checks its minisign
+  signature against the public key built into `os-update` (`dist/linux/minisign.pub`) and its
+  SHA-256, extracts only the expected files, backs up the installed programs, replaces them, and
+  restarts the `open-surround` service if it was running. If the updated node does not answer,
+  the previous programs are put back. Your settings and the DLL are not touched.
+- **Built from the repository** (`dist/linux/install.sh`) or **run from the package without
+  installing**: the banner only links to the release. Update the repository and run
+  `dist/linux/install.sh` again (no argument needed: it keeps the installed DLL), or download
+  the new package.
+
+Before replacing anything, the update checks the installed DLL
+(`~/.local/share/open-surround/DolbyAudioProcessing.dll`): the verified version (DAP 7.3.7) goes
+ahead; a DLL with another hash asks for confirmation ("Aggiorna comunque",
+`os-update apply --dll-non-verificato`); a missing DLL blocks the update, and the window offers
+"Scegli il DLL…" to pick your copy (`os-update dll <file>` from a terminal).
+
+To verify a release by hand: `minisign -Vm open-surround-<version>-linux-x86_64.tar.gz -p
+dist/linux/minisign.pub`.
 
 ### Real time on Linux (PipeWire)
 

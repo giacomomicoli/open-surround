@@ -1,7 +1,7 @@
 // Finestra di open-surround (fase 6, doc 12.15, L3): gli stessi controlli di Dolby Access.
 // La logica è in os_profiles::Settings; qui ci sono solo la disposizione e i callback.
 
-import { Button, Switch, Slider, VerticalBox, HorizontalBox, GroupBox, Palette } from "std-widgets.slint";
+import { Button, Switch, Slider, VerticalBox, HorizontalBox, GroupBox, Palette, CheckBox } from "std-widgets.slint";
 
 export struct Band {
     hz: string,
@@ -89,6 +89,31 @@ export component AppWindow inherits Window {
     in property <bool> node-ok;
     in property <string> error;
 
+    // Aggiornamenti (doc 12.15, "Aggiornamenti")
+    in property <string> version-text;
+    // Controllo e aggiornamento disponibili (Linux)
+    in property <bool> updates-here;
+    in-out property <bool> auto-check;
+    in property <bool> update-banner;
+    in property <string> update-title;
+    in property <string> update-notes;
+    // 0 nessun pulsante, 1 "Aggiorna" (installazione da una release), 2 link alla release
+    in property <int> update-action;
+    in property <bool> update-busy;
+    in property <string> update-message;
+    in property <bool> update-error;
+    // Avviso sul DLL installato: 0 nessuno, 1 versione non verificata, 2 mancante (blocca)
+    in property <int> dll-level;
+    in property <string> dll-text;
+    in property <bool> dll-confirm;
+
+    callback check-updates();
+    callback apply-update();
+    callback confirm-update();
+    callback open-release();
+    callback pick-dll();
+    callback set-auto-check(bool);
+
     callback select(int);
     callback set-performance(bool);
     callback set-ieq(int);
@@ -127,6 +152,89 @@ export component AppWindow inherits Window {
         VerticalBox {
             padding: 20px;
             spacing: 14px;
+
+            // Aggiornamento disponibile
+            if root.update-banner: Rectangle {
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: Palette.accent-background;
+                background: Palette.alternate-background;
+                accessible-role: groupbox;
+                accessible-label: "Aggiornamento disponibile";
+                vertical-stretch: 0;
+                VerticalLayout {
+                    alignment: start;
+                    padding: 10px;
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.update-title;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                        if root.update-action == 1: Button {
+                            text: "Aggiorna";
+                            enabled: !root.update-busy && root.dll-level != 2;
+                            clicked => { root.apply-update(); }
+                        }
+                        if root.update-action == 2: Button {
+                            text: "Apri la pagina della release";
+                            clicked => { root.open-release(); }
+                        }
+                    }
+                    if root.update-notes != "": Rectangle {
+                        height: min(notes.preferred-height, 110px);
+                        clip: true;
+                        notes := Text {
+                            y: 0;
+                            width: parent.width;
+                            text: root.update-notes;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            opacity: 0.85;
+                        }
+                    }
+                }
+            }
+
+            // Il DLL installato: mancante (blocca l'aggiornamento) o non verificato
+            if root.dll-level > 0: Rectangle {
+                border-radius: 6px;
+                border-width: 1px;
+                border-color: root.dll-level == 2 ? #c0392b : #d68910;
+                accessible-role: groupbox;
+                accessible-label: "Avviso sul DLL";
+                vertical-stretch: 0;
+                HorizontalLayout {
+                    padding: 10px;
+                    spacing: 8px;
+                    Text {
+                        text: root.dll-text;
+                        font-size: 12px;
+                        wrap: word-wrap;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        alignment: center;
+                        Button {
+                            text: "Scegli il DLL…";
+                            enabled: !root.update-busy;
+                            clicked => { root.pick-dll(); }
+                        }
+                        if root.dll-confirm: Button {
+                            text: "Aggiorna comunque";
+                            enabled: !root.update-busy;
+                            clicked => { root.confirm-update(); }
+                        }
+                    }
+                }
+            }
+
             HorizontalLayout {
                 Text {
                     text: root.profiles[root.active];
@@ -234,6 +342,34 @@ export component AppWindow inherits Window {
                 text: root.error;
                 font-size: 12px;
                 color: #c0392b;
+                wrap: word-wrap;
+            }
+
+            // Versione e aggiornamenti
+            HorizontalLayout {
+                spacing: 12px;
+                Text {
+                    text: root.version-text;
+                    font-size: 12px;
+                    opacity: 0.7;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                if root.updates-here: CheckBox {
+                    text: "Controlla all'avvio";
+                    checked <=> root.auto-check;
+                    toggled => { root.set-auto-check(root.auto-check); }
+                }
+                if root.updates-here: Button {
+                    text: "Cerca aggiornamenti";
+                    enabled: !root.update-busy;
+                    clicked => { root.check-updates(); }
+                }
+            }
+            if root.update-message != "": Text {
+                text: root.update-message;
+                font-size: 12px;
+                color: root.update-error ? #c0392b : Palette.foreground;
                 wrap: word-wrap;
             }
         }
