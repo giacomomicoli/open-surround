@@ -5,6 +5,10 @@
 #   dist/linux/install.sh --uninstall                  toglie quello che ha installato
 #                                                      (non le impostazioni né il DLL)
 #
+# Lo stesso script è nel pacchetto precompilato (dist/linux/package.sh), accanto a bin/: lì
+# installa i binari del pacchetto senza compilare, e il DLL si può omettere se è stato copiato
+# nella cartella del pacchetto.
+#
 # Installa:
 #   ~/.local/bin/os-pipewire, os-ui, os-ctl, os-blob
 #   ~/.local/share/open-surround/DolbyAudioProcessing.dll   copia del DLL indicato
@@ -13,7 +17,19 @@
 # Non avvia il servizio: alla fine stampa il comando per farlo.
 
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "$HERE/bin/os-pipewire" ]; then
+    # pacchetto precompilato
+    SRC_BIN="$HERE/bin"
+    SRC_SHARE="$HERE/share"
+    DEFAULT_DLL="$HERE/DolbyAudioProcessing.dll"
+else
+    # repository
+    cd "$HERE/../.."
+    SRC_BIN=target/release
+    SRC_SHARE=dist/linux
+    DEFAULT_DLL=""
+fi
 
 BIN="$HOME/.local/bin"
 DATA="$HOME/.local/share/open-surround"
@@ -30,15 +46,16 @@ if [ "${1:-}" = --uninstall ]; then
     exit 0
 fi
 
-DLL="${1:?uso: $0 <DolbyAudioProcessing.dll> | --uninstall}"
+DLL="${1:-$DEFAULT_DLL}"
+[ -n "$DLL" ] || { echo "uso: $0 <DolbyAudioProcessing.dll> | --uninstall"; exit 2; }
 [ -f "$DLL" ] || { echo "$DLL: non trovato"; exit 1; }
 
-cargo build --release -p os-pipewire -p os-ui -p os-profiles
+[ "$SRC_BIN" != target/release ] || cargo build --release -p os-pipewire -p os-ui -p os-profiles
 mkdir -p "$BIN" "$DATA" "$(dirname "$UNIT")" "$(dirname "$DESKTOP")"
-for t in "${TOOLS[@]}"; do install -m 755 "target/release/$t" "$BIN/$t"; done
+for t in "${TOOLS[@]}"; do install -m 755 "$SRC_BIN/$t" "$BIN/$t"; done
 [ "$(realpath "$DLL")" = "$(realpath -m "$DATA/DolbyAudioProcessing.dll")" ] || install -m 644 "$DLL" "$DATA/DolbyAudioProcessing.dll"
-install -m 644 dist/linux/open-surround.service "$UNIT"
-install -m 644 dist/linux/open-surround.desktop "$DESKTOP"
+install -m 644 "$SRC_SHARE/open-surround.service" "$UNIT"
+install -m 644 "$SRC_SHARE/open-surround.desktop" "$DESKTOP"
 systemctl --user daemon-reload
 
 echo "installato. Per avviare il nodo ora e a ogni accesso:"
