@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# open-surround — avvia nodo e finestra dal pacchetto precompilato, senza installare nulla
+# (doc 12.15, "Pacchetto precompilato"). Sta nella cartella del pacchetto, accanto a bin/.
+#
+#   ./open-surround [--dll <file>] [--socket <path>] [--senza-finestra] [-- <opzioni di os-pipewire>]
+#
+#   --dll             DolbyAudioProcessing.dll (default: quello copiato nella cartella del pacchetto)
+#   --socket          socket di controllo (default $XDG_RUNTIME_DIR/open-surround/control.sock)
+#   --senza-finestra  solo il nodo, in primo piano, finché non lo si ferma con Ctrl-C
+#
+# Se sul socket risponde già un nodo (il servizio installato con install.sh o un altro avvio) apre
+# solo la finestra. Altrimenti avvia il nodo con le stesse impostazioni della versione installata
+# (~/.config/open-surround/settings.json) e lo ferma quando si chiude la finestra.
+
+set -euo pipefail
+HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+BIN="$HERE/bin"
+DLL=""
+SOCK=""
+UI=1
+EXTRA=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dll) DLL="${2:?manca il file di --dll}"; shift 2 ;;
+        --socket) SOCK="${2:?manca il path di --socket}"; shift 2 ;;
+        --senza-finestra) UI=0; shift ;;
+        --) shift; EXTRA=("$@"); break ;;
+        -h | --help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "opzione sconosciuta: $1 (vedi --help)" >&2; exit 2 ;;
+    esac
+done
+[ -n "$SOCK" ] || SOCK="${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR non impostata}/open-surround/control.sock"
+[ -n "$DLL" ] || DLL="$HERE/DolbyAudioProcessing.dll"
+SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/open-surround/settings.json"
+
+if "$BIN/os-ctl" --socket "$SOCK" stato > /dev/null 2>&1; then
+    echo "il nodo è già attivo su $SOCK: apro solo la finestra"
+    [ "$UI" = 1 ] && exec "$BIN/os-ui" --socket "$SOCK"
+    exit 0
+fi
+
+if [ ! -f "$DLL" ]; then
+    echo "manca il DLL: $DLL" >&2
+    echo "copia DolbyAudioProcessing.dll in $HERE oppure indicalo con --dll <file>" >&2
+    exit 1
+fi
+
+"$BIN/os-pipewire" --settings "$SETTINGS" --socket "$SOCK" --dll "$DLL" ${EXTRA[@]+"${EXTRA[@]}"} &
+NODE=$!
+trap 'kill "$NODE" 2> /dev/null || true; wait "$NODE" 2> /dev/null || true' EXIT
+trap 'exit 130' INT TERM
+
+if [ "$UI" = 0 ]; then
+    wait "$NODE"
+    exit $?
+fi
+
+# La finestra parte quando il nodo risponde sul socket (il modulo si apre in qualche secondo).
+for _ in $(seq 100); do
+    "$BIN/os-ctl" --socket "$SOCK" stato > /dev/null 2>&1 && break
+    kill -0 "$NODE" 2> /dev/null || { wait "$NODE" || exit $?; exit 1; }
+    sleep 0.2
+done
+"$BIN/os-ui" --socket "$SOCK"
