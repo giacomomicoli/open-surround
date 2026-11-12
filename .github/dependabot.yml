@@ -20,9 +20,14 @@ updates:
       # pipewire e libspa seguono la versione di PipeWire richiesta dal nodo (>= 1.2): insieme.
       pipewire:
         patterns: ["pipewire", "pipewire-*", "libspa", "libspa-*"]
+      # windows e windows-core devono avere la stessa versione, e si compilano solo su Windows
+      # (os-dap-host, os-verify): la CI su Linux non li verifica, serve una build su Windows
+      # prima del merge.
+      windows:
+        patterns: ["windows", "windows-*"]
       minori:
         update-types: ["minor", "patch"]
-        exclude-patterns: ["slint", "slint-*", "i-slint-*", "pipewire", "pipewire-*", "libspa", "libspa-*"]
+        exclude-patterns: ["slint", "slint-*", "i-slint-*", "pipewire", "pipewire-*", "libspa", "libspa-*", "windows", "windows-*"]
 
   # Le action sono fissate per SHA: Dependabot aggiorna SHA e commento di versione.
   - package-ecosystem: github-actions
