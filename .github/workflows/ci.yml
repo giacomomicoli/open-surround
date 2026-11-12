@@ -1,0 +1,59 @@
+# CI: build, test e clippy del workspace a ogni PR e a ogni push su main, nello stesso ambiente
+# del pacchetto di release (Debian 13, PipeWire >= 1.2). È il controllo richiesto per unire su
+# main (ruleset "main protetto") e quello che verifica le PR di Dependabot.
+#
+# Niente segreti e niente DLL di Dolby: i test che ne hanno bisogno (o che leggono le
+# registrazioni private in target/verify) si saltano da soli.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build e test (Linux x86_64)
+    runs-on: ubuntu-latest
+    container: debian:13
+    steps:
+      - name: Dipendenze di build
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config clang libclang-dev \
+            libpipewire-0.3-dev libfontconfig1-dev libfreetype-dev libxkbcommon-dev
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # Informativo per ora: main ha avvisi di clippy già esistenti. Da rendere bloccante
+      # (-D warnings) quando sono stati sistemati.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked
+
+      - name: Script di shell
+        run: bash -n dist/linux/install.sh dist/linux/open-surround dist/linux/package.sh
