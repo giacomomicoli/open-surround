@@ -11,6 +11,12 @@
 //! (zeri in testa a quel ciclo, una volta sola). Non cala mai: abbassarla vorrebbe dire scartare
 //! audio.
 //!
+//! Ingresso e uscita di un ciclo possono avere lunghezze diverse ([`Streamer::process_io`]): in
+//! PipeWire, nel ciclo in cui il grafo passa da 1024 a 2048 frame, l'uscita ne chiede 2048 e il
+//! sink ne ha ancora 1024. Il modulo riceve solo i frame arrivati: completarli con degli zeri
+//! vorrebbe dire dargli silenzio che il flusso non ha (doc 12.15, "Instabilità all'avvio delle
+//! sessioni").
+//!
 //! Il modulo ha memoria (leveler, smoothing, filtri): la sua uscita dipende da tutto ciò che ha
 //! elaborato prima, anche dal silenzio (Film con 10 s di silenzio in testa: −35 dB dal
 //! riferimento). Su Windows ogni sessione parte da un modulo appena configurato, e così deve
@@ -62,6 +68,7 @@ pub struct Streamer<B: Backend> {
     head: usize,
     queued: usize,
     latency: usize,
+    overflows: u64,
     max_frames: usize,
     started: bool,
     /// Modulo appena configurato, non ancora chiamato: si aspetta una sorgente.
@@ -86,11 +93,13 @@ impl<B: Backend> Streamer<B> {
             engine,
             filled: 0,
             written: [0; NUM_STATIC],
-            // Al massimo: latenza (< blocco) + un blocco appena prodotto + un ciclo intero.
-            ring: vec![0.0; (max_frames + 2 * block) * OUT_CHANNELS],
+            // Latenza (< blocco) + un blocco appena prodotto + un ciclo intero, e un altro ciclo
+            // per un ingresso più lungo dell'uscita (`process_io`).
+            ring: vec![0.0; (2 * max_frames + 2 * block) * OUT_CHANNELS],
             head: 0,
             queued: 0,
             latency: 0,
+            overflows: 0,
             max_frames,
             started: false,
             idle: true,
@@ -204,7 +213,19 @@ impl<B: Backend> Streamer<B> {
     /// frame in `out` (sinistro, destro), moltiplicati per `volume` dopo il modulo, come il
     /// volume dell'endpoint di Windows.
     pub fn process(&mut self, frames: usize, sources: &[Source], volume: f32, out: [&mut [f32]; 2]) -> Result<()> {
+        self.process_io(frames, sources, volume, out)
+    }
+
+    /// Come [`Streamer::process`], ma con l'ingresso di `input_frames` frame e l'uscita di
+    /// `out[0].len()` frame, anche diversi. Al modulo vanno solo i frame arrivati davvero:
+    /// in un grafo che cambia quantum, l'uscita può chiedere 2048 frame nel ciclo in cui il
+    /// sink ne ha ancora 1024 (doc 12.15, "Instabilità all'avvio delle sessioni"). Se l'uscita
+    /// chiede più di quanto il modulo abbia prodotto, la latenza cresce (zeri in uscita, una
+    /// volta sola); se l'ingresso è più lungo, l'eccedenza resta in coda per i cicli dopo.
+    /// Senza sorgenti `input_frames` è il silenzio da elaborare (di solito quanto l'uscita).
+    pub fn process_io(&mut self, input_frames: usize, sources: &[Source], volume: f32, out: [&mut [f32]; 2]) -> Result<()> {
         let [left, right] = out;
+        let frames = left.len().min(right.len());
         if !self.started && frames > 0 {
             self.started = true;
             let block = self.engine.block_frames();
@@ -219,12 +240,21 @@ impl<B: Backend> Streamer<B> {
             self.ring[..self.latency * OUT_CHANNELS].fill(0.0);
             self.queued = self.latency;
         }
-        let mut pos = 0;
-        while pos < frames {
-            let n = (frames - pos).min(self.max_frames);
-            self.push(pos, n, sources)?;
-            self.pop(&mut left[pos..pos + n], &mut right[pos..pos + n], volume);
-            pos += n;
+        // A pezzi di `max_frames`, ciascuno prima nel modulo e poi in uscita: con ingresso e
+        // uscita uguali è il percorso di sempre; con un ingresso più corto i pezzi d'uscita in
+        // più arrivano dopo tutto l'ingresso, quindi la latenza cresce solo se serve davvero.
+        let (mut pin, mut pout) = (0, 0);
+        while pin < input_frames || pout < frames {
+            let n = (input_frames - pin).min(self.max_frames);
+            if n > 0 {
+                self.push(pin, n, sources)?;
+                pin += n;
+            }
+            let n = (frames - pout).min(self.max_frames);
+            if n > 0 {
+                self.pop(&mut left[pout..pout + n], &mut right[pout..pout + n], volume);
+                pout += n;
+            }
         }
         Ok(())
     }
@@ -280,10 +310,10 @@ impl<B: Backend> Streamer<B> {
                     *w = 0;
                 }
                 self.deliver_changes()?;
+                self.make_room(block);
                 let out = self.engine.process(&active)?;
                 self.block_start += block as u64;
                 let cap = self.ring.len() / OUT_CHANNELS;
-                debug_assert!(self.queued + block <= cap);
                 let mut tail = (self.head + self.queued) % cap;
                 for frame in out.chunks_exact(OUT_CHANNELS) {
                     self.ring[tail * OUT_CHANNELS..(tail + 1) * OUT_CHANNELS].copy_from_slice(frame);
@@ -304,9 +334,26 @@ impl<B: Backend> Streamer<B> {
         Ok(())
     }
 
-    fn enqueue_zeros(&mut self, frames: usize) {
+    /// Fa posto per `frames` frame nel ring: se l'ingresso è stato a lungo più lungo
+    /// dell'uscita, scarta l'uscita più vecchia (contata in [`Streamer::overflows`]).
+    fn make_room(&mut self, frames: usize) {
         let cap = self.ring.len() / OUT_CHANNELS;
-        debug_assert!(self.queued + frames <= cap);
+        let excess = (self.queued + frames).saturating_sub(cap);
+        if excess > 0 {
+            self.head = (self.head + excess) % cap;
+            self.queued -= excess;
+            self.overflows += excess as u64;
+        }
+    }
+
+    /// Frame d'uscita scartati perché il ring era pieno (ingresso più lungo dell'uscita).
+    pub fn overflows(&self) -> u64 {
+        self.overflows
+    }
+
+    fn enqueue_zeros(&mut self, frames: usize) {
+        self.make_room(frames);
+        let cap = self.ring.len() / OUT_CHANNELS;
         let mut tail = (self.head + self.queued) % cap;
         for _ in 0..frames {
             self.ring[tail * OUT_CHANNELS..(tail + 1) * OUT_CHANNELS].fill(0.0);
@@ -515,6 +562,44 @@ mod tests {
         run(&[100, 3000], 512);
         run(&[1024, 480], 256);
         run(&[1, 1, 1, 255, 257], 256);
+    }
+
+    #[test]
+    fn cambio_di_quantum_con_ingresso_in_ritardo() {
+        // Grafo da 1024 a 2048 frame: nel ciclo del cambio l'uscita chiede 2048 frame e il sink
+        // ne ha ancora 1024 (visto in PipeWire, doc 12.15). Il modulo deve ricevere solo
+        // l'ingresso vero, senza zeri in mezzo: l'uscita è il percorso a blocchi, con 1024 zeri
+        // (la latenza cresciuta) dove l'ingresso è mancato. Al ritorno a 1024 il sink dà 2048
+        // frame in un ciclo da 1024: l'eccedenza resta in coda, niente si perde.
+        let rg = Routing::new(8, false, None).unwrap();
+        let block = 256;
+        let total = 24 * 1024;
+        let games = signal(total, 8, 3);
+        let empty: Vec<Vec<f32>> = vec![vec![0.0; total]; 2];
+        let ra = Routing::new(2, true, None).unwrap();
+        let reference = reference(&games, &empty, &rg, &ra, block, 0.5);
+        let mut s = Streamer::new(engine(block), 1024);
+        // (frame d'ingresso, frame d'uscita) per ciclo.
+        let cycles = [(1024, 1024), (1024, 1024), (1024, 2048), (2048, 2048), (2048, 2048), (2048, 1024), (1024, 1024), (1024, 1024)];
+        let (mut pos, mut got) = (0, Vec::new());
+        for &(i, o) in &cycles {
+            let g: Vec<&[f32]> = games.iter().map(|c| &c[pos..pos + i]).collect();
+            let a: Vec<&[f32]> = empty.iter().map(|c| &c[pos..pos + i]).collect();
+            let (mut l, mut r) = (vec![0.0; o], vec![0.0; o]);
+            let src = [Source { routing: &rg, channels: &g }, Source { routing: &ra, channels: &a }];
+            s.process_io(i, &src, 0.5, [&mut l, &mut r]).unwrap();
+            got.extend(l.iter().zip(&r).map(|(&l, &r)| [l, r]));
+            pos += i;
+        }
+        assert_eq!(s.latency(), 1024);
+        assert_eq!(s.overflows(), 0);
+        let mut expected: Vec<[f32; 2]> = reference[..3072].to_vec();
+        expected.extend(std::iter::repeat_n([0.0, 0.0], 1024));
+        expected.extend(&reference[3072..got.len() - 1024]);
+        assert_eq!(got.len(), expected.len());
+        for (k, (g, e)) in got.iter().zip(&expected).enumerate() {
+            assert_eq!(g.map(f32::to_bits), e.map(f32::to_bits), "frame {k}");
+        }
     }
 
     #[test]
