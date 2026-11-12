@@ -7,13 +7,20 @@
 //!   app ─────► [sink stereo, Audio/Sink] ──┘ bypass 17-18, 0 dB
 //! ```
 //!
-//! Le due sorgenti devono finire nella stessa chiamata a EncodeAudioData, come su Windows (bed e
+//! Le due sorgenti finiscono nella stessa chiamata a EncodeAudioData, come su Windows (bed e
 //! bypass nello stesso blocco). I sink sono flussi in ingresso `ASYNC`: il loro `process` non
-//! consuma i buffer, segna solo il ciclo; quando nel ciclo corrente sono passati tutti i sink
-//! attesi, il primo che lo nota fa partire l'uscita (`TRIGGER`), che preleva il buffer più
-//! recente di ciascun sink, elabora e consegna. È lo schema di `module-filter-chain` di
-//! PipeWire, esteso a due ingressi; l'uscita gira nello stesso ciclo degli ingressi, quindi il
-//! nodo non aggiunge latenza oltre a quella dell'adattatore a blocchi fissi.
+//! consuma i buffer, segna solo il ciclo e fa partire l'uscita (`TRIGGER`), aspettando l'altro
+//! sink solo se questo aveva audio (`Shared::capture_ran`). L'uscita copia i buffer di ciascun
+//! sink in una coda sua e li restituisce subito, poi elabora **in ordine** il ciclo più vecchio
+//! di ciascun sink (fino a [`HOLD`] restano da parte). È lo schema di `module-filter-chain` di
+//! PipeWire, esteso a due ingressi. Un sink in ritardo viene elaborato al ciclo successivo,
+//! senza perdere audio.
+//!
+//! Prima (fino al 12/11/2026) un sink aspettava l'altro se questo era passato nel ciclo
+//! precedente, anche vuoto, e l'uscita prendeva solo il buffer più recente. Con un driver ALSA vero e un
+//! client a bassa latenza (Brave, `pacat --latency-msec=5`), un sink in ritardo di un ciclo
+//! lasciava quel ciclo senza uscita e senza buffer restituiti, e il nodo si fermava in
+//! un'alternanza stabile: un ciclo di audio e uno di silenzio (doc 12.15, prova a mano).
 //!
 //! Sessioni: il modulo ha memoria (leveler), e Windows lo distrugge appena l'ultimo flusso
 //! dell'endpoint viene rilasciato e ne crea uno nuovo al flusso successivo, qualunque sia la
@@ -108,6 +115,94 @@ struct Rt {
     ended: u64,
 }
 
+/// Cicli d'ingresso che l'uscita tiene da parte per ciascun sink, oltre a quello in elaborazione.
+const HOLD: usize = 2;
+
+/// Un ciclo d'ingresso di un sink, copiato dal buffer di PipeWire (che torna subito al sink:
+/// tenerlo fra un ciclo e l'altro non è sicuro, PipeWire può liberarlo se il sink viene
+/// sospeso o rinegoziato).
+struct Slot {
+    frames: usize,
+    /// Canali con dati (gli altri sono vuoti: `SPA_CHUNK_FLAG_EMPTY`, cioè zeri).
+    has: [bool; MAX_CHANNELS],
+    /// Canale c in `data[c * MAX_QUANTUM ..][..frames]`.
+    data: Vec<f32>,
+}
+
+/// Coda FIFO di cicli d'ingresso di un sink, preallocata all'avvio (niente allocazioni nel
+/// thread real time). Un solo produttore (il `process` del sink, che copia e restituisce subito
+/// il buffer: così il sink non resta mai senza buffer, anche se l'uscita salta un ciclo) e un
+/// solo consumatore (il `process` dell'uscita), anche su thread diversi.
+struct Fifo {
+    slots: Box<[UnsafeCell<Slot>]>,
+    /// Prossimo ciclo da elaborare e prossimo da scrivere (contatori, modulo `slots.len()`).
+    head: AtomicUsize,
+    tail: AtomicUsize,
+}
+
+impl Fifo {
+    fn new() -> Fifo {
+        let slots = (0..HOLD + 1)
+            .map(|_| UnsafeCell::new(Slot { frames: 0, has: [false; MAX_CHANNELS], data: vec![0.0; MAX_CHANNELS * MAX_QUANTUM] }))
+            .collect();
+        Fifo { slots, head: AtomicUsize::new(0), tail: AtomicUsize::new(0) }
+    }
+
+    fn len(&self) -> usize {
+        self.tail.load(Ordering::Acquire).wrapping_sub(self.head.load(Ordering::Acquire))
+    }
+
+    /// Produttore: copia in coda un buffer di PipeWire con `channels` canali. Con la coda piena
+    /// il ciclo si scarta e restituisce false.
+    ///
+    /// # Safety
+    /// `b` è un buffer valido appena prelevato dal sink; un solo produttore per coda.
+    unsafe fn push(&self, b: *mut pw_sys::pw_buffer, channels: usize) -> bool {
+        let tail = self.tail.load(Ordering::Relaxed);
+        if tail.wrapping_sub(self.head.load(Ordering::Acquire)) == self.slots.len() {
+            return false;
+        }
+        // SAFETY: il consumatore non legge questo slot finché `tail` non lo pubblica.
+        let slot = unsafe { &mut *self.slots[tail % self.slots.len()].get() };
+        slot.frames = 0;
+        slot.has = [false; MAX_CHANNELS];
+        let sb = unsafe { (*b).buffer };
+        let datas = unsafe { std::slice::from_raw_parts((*sb).datas, (*sb).n_datas as usize) };
+        for (c, d) in datas.iter().take(channels.min(MAX_CHANNELS)).enumerate() {
+            if d.data.is_null() || d.chunk.is_null() {
+                continue;
+            }
+            let chunk = unsafe { &*d.chunk };
+            if chunk.flags & spa_sys::SPA_CHUNK_FLAG_EMPTY as i32 != 0 {
+                continue;
+            }
+            let off = (chunk.offset).min(d.maxsize) as usize;
+            let size = (chunk.size as usize).min(d.maxsize as usize - off);
+            let n = (size / 4).min(MAX_QUANTUM);
+            let src = unsafe { std::slice::from_raw_parts((d.data as *const u8).add(off) as *const f32, n) };
+            slot.data[c * MAX_QUANTUM..][..n].copy_from_slice(src);
+            slot.has[c] = true;
+            slot.frames = slot.frames.max(n);
+        }
+        self.tail.store(tail.wrapping_add(1), Ordering::Release);
+        true
+    }
+
+    /// Consumatore: il ciclo più vecchio, da rilasciare con [`Fifo::release`] dopo l'uso.
+    fn front(&self) -> Option<&Slot> {
+        let head = self.head.load(Ordering::Relaxed);
+        if head == self.tail.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: il produttore non riscrive questo slot finché `head` non avanza.
+        Some(unsafe { &*self.slots[head % self.slots.len()].get() })
+    }
+
+    fn release(&self) {
+        self.head.store(self.head.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
+    }
+}
+
 #[derive(Default)]
 struct Stats {
     cycles: AtomicU64,
@@ -121,6 +216,21 @@ struct Stats {
     resets: AtomicU64,
     changes: AtomicU64,
     idle: std::sync::atomic::AtomicBool,
+    /// Esecuzioni del `process` di ciascun sink (con -v: un sink che salta cicli si vede qui).
+    ran: [AtomicU64; 2],
+    /// Durata dell'ultimo ciclo del grafo (frame, dalla posizione del driver) e frame in
+    /// ingresso nell'ultimo ciclo elaborato.
+    duration: AtomicUsize,
+    in_frames: AtomicUsize,
+    /// Sink che hanno aspettato l'altro, e partenze dell'uscita chieste dai sink.
+    waits: AtomicU64,
+    triggers: AtomicU64,
+    /// Buffer d'ingresso scartati perché ne erano già da parte HOLD, e massimo tenuti da parte
+    /// dopo un ciclo (0 o 1 normalmente).
+    dropped: AtomicU64,
+    held_max: AtomicUsize,
+    /// Salti nel numero di ciclo visto da un sink fra due esecuzioni (cicli persi).
+    skipped: AtomicU64,
 }
 
 /// Condiviso tra i callback dei tre flussi (thread real time e thread principale).
@@ -132,6 +242,12 @@ struct Shared {
     /// Ultimo ciclo in cui è passato ciascun sink, e ultimo ciclo che ha fatto partire l'uscita.
     seen: [AtomicU64; 2],
     triggered: AtomicU64,
+    /// Cicli d'ingresso dei sink copiati ma non ancora elaborati.
+    held: [Fifo; 2],
+    /// Canali di ciascun sink.
+    channels: [usize; 2],
+    /// L'ultimo ciclo elaborato di ciascun sink aveva audio (lo scrive l'uscita, lo leggono i sink).
+    audio: [std::sync::atomic::AtomicBool; 2],
     /// Guadagno dopo il modulo (f32): volume dei sink × --volume-db.
     volume: AtomicU32,
     latency: AtomicUsize,
@@ -153,23 +269,49 @@ impl Shared {
         self.captures[i].load(Ordering::Acquire)
     }
 
-    /// `process` di un sink: segna il ciclo e, se gli altri sink attesi sono già passati, fa
-    /// partire l'uscita. Un sink è atteso se è passato nel ciclo precedente: uno che non viene
-    /// più eseguito (scollegato, sospeso) costa al massimo un ciclo, poi non si aspetta più.
+    /// `process` di un sink: segna il ciclo e fa partire l'uscita, salvo aspettare l'altro sink
+    /// se nel ciclo precedente l'altro è passato **e aveva audio**: così, quando una sola
+    /// sorgente suona, il suo blocco arriva al modulo nello stesso ciclo (come su Windows), e
+    /// il sink con l'audio non aspetta mai quello vuoto. Se l'atteso non arriva, il ciclo resta
+    /// senza uscita (un ciclo di silenzio) ma i suoi dati restano in coda per il ciclo dopo.
     fn capture_ran(&self, idx: usize) {
+        self.stats.ran[idx].fetch_add(1, Ordering::Relaxed);
+        // I dati del sink si copiano subito in coda e il buffer torna al sink.
+        let cap = self.capture_ptr(idx);
+        loop {
+            let b = unsafe { pw_sys::pw_stream_dequeue_buffer(cap) };
+            if b.is_null() {
+                break;
+            }
+            // SAFETY: buffer appena prelevato; questo process è l'unico produttore della coda.
+            if !unsafe { self.held[idx].push(b, self.channels[idx]) } {
+                self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+            unsafe { pw_sys::pw_stream_queue_buffer(cap, b) };
+        }
         let pos = self.position[idx].load(Ordering::Acquire);
         if pos.is_null() {
             self.trigger(idx);
             return;
         }
         let cycle = unsafe { (*pos).clock.cycle };
+        self.stats.duration.store(unsafe { (*pos).clock.duration } as usize, Ordering::Relaxed);
         let me = cycle as u64 | VALID;
-        self.seen[idx].store(me, Ordering::Release);
+        let prev = self.seen[idx].swap(me, Ordering::AcqRel);
+        if prev & VALID != 0 {
+            let gap = cycle.wrapping_sub(prev as u32);
+            if gap > 1 && gap < 1000 {
+                self.stats.skipped.fetch_add((gap - 1) as u64, Ordering::Relaxed);
+            }
+        }
         let other = self.seen[1 - idx].load(Ordering::Acquire);
-        if other & VALID != 0 && other != me && (other as u32).wrapping_add(1) == cycle {
+        let other_audio = self.audio[1 - idx].load(Ordering::Acquire);
+        if other_audio && other & VALID != 0 && other != me && (other as u32).wrapping_add(1) == cycle {
+            self.stats.waits.fetch_add(1, Ordering::Relaxed);
             return;
         }
         if self.triggered.swap(me, Ordering::AcqRel) != me {
+            self.stats.triggers.fetch_add(1, Ordering::Relaxed);
             self.trigger(idx);
         }
     }
@@ -177,16 +319,11 @@ impl Shared {
     fn trigger(&self, idx: usize) {
         let res = unsafe { pw_sys::pw_stream_trigger_process(self.playback.load(Ordering::Acquire)) };
         if res < 0 {
-            // L'uscita non è pronta (non ancora collegata): i buffer di questo sink si
-            // ricircolano, altrimenti resterebbero tutti in coda.
+            // L'uscita non è pronta (non ancora collegata): il ciclo di questo sink si scarta,
+            // altrimenti la coda resterebbe piena.
             self.stats.trigger_failed.fetch_add(1, Ordering::Relaxed);
-            let cap = self.capture_ptr(idx);
-            loop {
-                let b = unsafe { pw_sys::pw_stream_dequeue_buffer(cap) };
-                if b.is_null() {
-                    break;
-                }
-                unsafe { pw_sys::pw_stream_queue_buffer(cap, b) };
+            if self.held[idx].front().is_some() {
+                self.held[idx].release();
             }
         }
     }
@@ -195,20 +332,10 @@ impl Shared {
     fn playback_process(&self) {
         let start = Instant::now();
         let pb = self.playback.load(Ordering::Acquire);
-        // Il buffer più recente di ciascun sink; i più vecchi tornano subito in coda.
-        let mut inb: [*mut pw_sys::pw_buffer; 2] = [std::ptr::null_mut(); 2];
-        for (i, slot) in inb.iter_mut().enumerate() {
-            let cap = self.capture_ptr(i);
-            loop {
-                let b = unsafe { pw_sys::pw_stream_dequeue_buffer(cap) };
-                if b.is_null() {
-                    break;
-                }
-                if !slot.is_null() {
-                    unsafe { pw_sys::pw_stream_queue_buffer(cap, *slot) };
-                }
-                *slot = b;
-            }
+        // Per ogni sink il ciclo più vecchio non ancora elaborato (i successivi restano in coda).
+        let inb: [Option<&Slot>; 2] = [self.held[0].front(), self.held[1].front()];
+        for f in &self.held {
+            self.stats.held_max.fetch_max(f.len().saturating_sub(1), Ordering::Relaxed);
         }
         let out = unsafe { pw_sys::pw_stream_dequeue_buffer(pb) };
         if !out.is_null() {
@@ -218,9 +345,9 @@ impl Shared {
         } else {
             self.stats.no_output.fetch_add(1, Ordering::Relaxed);
         }
-        for (i, b) in inb.iter().enumerate() {
-            if !b.is_null() {
-                unsafe { pw_sys::pw_stream_queue_buffer(self.capture_ptr(i), *b) };
+        for (f, b) in self.held.iter().zip(inb) {
+            if b.is_some() {
+                f.release();
             }
         }
         let ns = start.elapsed().as_nanos() as u64;
@@ -228,7 +355,7 @@ impl Shared {
         self.stats.cycles.fetch_add(1, Ordering::Relaxed);
     }
 
-    unsafe fn render(&self, out: *mut pw_sys::pw_buffer, inb: &[*mut pw_sys::pw_buffer; 2]) {
+    unsafe fn render(&self, out: *mut pw_sys::pw_buffer, inb: &[Option<&Slot>; 2]) {
         // SAFETY: vedi `Shared`: solo questo callback usa `rt`.
         let rt = unsafe { &mut *self.rt.get() };
         let ended = self.sessions_ended.load(Ordering::Acquire);
@@ -257,26 +384,15 @@ impl Shared {
         let mut present = [false; 2];
         let mut in_frames = 0;
         for i in 0..2 {
-            if inb[i].is_null() {
-                continue;
-            }
-            let ib = unsafe { (*inb[i]).buffer };
-            let ind = unsafe { std::slice::from_raw_parts((*ib).datas, (*ib).n_datas as usize) };
-            for (c, d) in ind.iter().take(rt.channels[i]).enumerate() {
-                if d.data.is_null() || d.chunk.is_null() {
-                    continue;
-                }
-                let chunk = unsafe { &*d.chunk };
+            let Some(slot) = inb[i] else { continue };
+            for (c, ch) in chans[i].iter_mut().enumerate().take(rt.channels[i]) {
                 // Canale senza dati (nessun client collegato, o fermo): resta vuoto, cioè zeri.
-                if chunk.flags & spa_sys::SPA_CHUNK_FLAG_EMPTY as i32 != 0 {
+                if !slot.has[c] {
                     self.stats.empty[i].fetch_add(1, Ordering::Relaxed);
                     continue;
                 }
-                let off = (chunk.offset).min(d.maxsize) as usize;
-                let size = (chunk.size as usize).min(d.maxsize as usize - off);
-                let p = unsafe { (d.data as *const u8).add(off) as *const f32 };
-                chans[i][c] = unsafe { std::slice::from_raw_parts(p, size / 4) };
-                in_frames = in_frames.max(size / 4);
+                *ch = &slot.data[c * MAX_QUANTUM..][..slot.frames];
+                in_frames = in_frames.max(slot.frames);
                 // Come su Windows: gli oggetti di un flusso sono attivi finché il flusso suona.
                 present[i] = true;
             }
@@ -284,8 +400,15 @@ impl Shared {
                 self.stats.present[i].fetch_add(1, Ordering::Relaxed);
             }
         }
+        for i in 0..2 {
+            // Un sink senza ciclo nuovo (in ritardo) conserva lo stato: non si sa ancora se ha audio.
+            if inb[i].is_some() {
+                self.audio[i].store(present[i], Ordering::Release);
+            }
+        }
         let frames = if requested > 0 { requested } else { in_frames }.min(room);
         self.stats.quantum.store(frames, Ordering::Relaxed);
+        self.stats.in_frames.store(in_frames, Ordering::Relaxed);
 
         let all = [
             Source { routing: &rt.routes[GAMES], channels: &chans[GAMES][..rt.channels[GAMES]] },
@@ -486,6 +609,9 @@ pub fn run(args: Args) -> Result<()> {
         position: Default::default(),
         seen: Default::default(),
         triggered: AtomicU64::new(0),
+        held: [Fifo::new(), Fifo::new()],
+        channels,
+        audio: Default::default(),
         volume: AtomicU32::new(fixed.to_bits()),
         latency: AtomicUsize::new(0),
         sessions_ended: AtomicU64::new(0),
@@ -701,10 +827,19 @@ pub fn run(args: Args) -> Result<()> {
             let s = &sh_t.stats;
             let cycles = s.cycles.load(Ordering::Relaxed);
             eprintln!(
-                "[nodo] cicli {} (+{}), quantum {}, giochi {} (vuoti {}), app {} (vuoti {}), modulo {}, riconfigurazioni {}, cambi di profilo {}, senza buffer d'uscita {}, errori {}, trigger falliti {}, process max {:.3} ms",
+                "[nodo] cicli {} (+{}), quantum {} (ciclo del grafo {}, ingresso {}), sink eseguiti {}/{} (attese {}, partenze {}, cicli saltati {}, cicli da parte max {}, scartati {}), giochi {} (vuoti {}), app {} (vuoti {}), modulo {}, riconfigurazioni {}, cambi di profilo {}, senza buffer d'uscita {}, errori {}, trigger falliti {}, process max {:.3} ms",
                 cycles,
                 cycles - last_cycles.get(),
                 s.quantum.load(Ordering::Relaxed),
+                s.duration.load(Ordering::Relaxed),
+                s.in_frames.load(Ordering::Relaxed),
+                s.ran[GAMES].load(Ordering::Relaxed),
+                s.ran[APPS].load(Ordering::Relaxed),
+                s.waits.load(Ordering::Relaxed),
+                s.triggers.load(Ordering::Relaxed),
+                s.skipped.load(Ordering::Relaxed),
+                s.held_max.load(Ordering::Relaxed),
+                s.dropped.load(Ordering::Relaxed),
                 s.present[GAMES].load(Ordering::Relaxed),
                 s.empty[GAMES].load(Ordering::Relaxed),
                 s.present[APPS].load(Ordering::Relaxed),
