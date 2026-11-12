@@ -11,6 +11,7 @@ pub mod check;
 pub mod control;
 pub mod model;
 pub mod settings;
+pub mod version;
 pub mod wire;
 
 pub use blob::{DafmProfile, DapVrInit, DapVrRuntime, Decoded, DolbyContext, D5e60007};

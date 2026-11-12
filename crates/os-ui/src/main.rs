@@ -10,11 +10,15 @@
 //!   os-ui [opzioni]
 //!     --settings <file>   file delle impostazioni (default ~/.config/open-surround/settings.json)
 //!     --socket <path>     socket del nodo (default $XDG_RUNTIME_DIR/open-surround/control.sock)
+//!   All'avvio controlla gli aggiornamenti al più una volta al giorno (si disattiva dalla
+//!   finestra; doc 12.15, "Aggiornamenti").
 //!   Per le prove:
 //!     --select <profilo>  profilo attivo all'avvio (gaming, film, …, custom3), senza salvare
 //!     --snapshot <f.ppm>  salva un'immagine della finestra dopo l'avvio ed esce
 
 mod app;
+#[cfg(target_os = "linux")]
+mod update;
 mod view;
 
 use std::cell::RefCell;
@@ -28,6 +32,8 @@ use os_profiles::settings::{default_path, Kind, Settings};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
 use app::App;
+#[cfg(target_os = "linux")]
+use update::{Msg, Updater};
 use view::Throttle;
 
 slint::include_modules!();
@@ -221,7 +227,7 @@ fn main() -> Result<()> {
 
     if let Some(path) = args.snapshot.clone() {
         let weak = ui.as_weak();
-        Timer::single_shot(Duration::from_millis(800), move || {
+        Timer::single_shot(Duration::from_millis(1500), move || {
             if let Some(ui) = weak.upgrade() {
                 if let Err(e) = snapshot(&ui, &path) {
                     eprintln!("istantanea: {e:#}");
@@ -231,8 +237,192 @@ fn main() -> Result<()> {
         });
     }
 
+    ui.set_version_text(format!("open-surround {}", os_profiles::version::describe()).into());
+    #[cfg(target_os = "linux")]
+    let updates = Timer::default();
+    #[cfg(target_os = "linux")]
+    if let Ok(paths) = os_update::paths::Paths::from_env() {
+        let up = Rc::new(RefCell::new(Updater::new(paths)));
+        wire_updates(&ui, &up);
+        let (up, weak) = (up.clone(), ui.as_weak());
+        updates.start(TimerMode::Repeated, Duration::from_millis(150), move || {
+            if let Some(ui) = weak.upgrade() {
+                handle_messages(&ui, &up);
+            }
+        });
+    }
+
     ui.run()?;
     Ok(())
+}
+
+/// Preferenze, avviso sul DLL all'avvio e callback degli aggiornamenti.
+#[cfg(target_os = "linux")]
+fn wire_updates(ui: &AppWindow, up: &Rc<RefCell<Updater>>) {
+    ui.set_updates_here(true);
+    {
+        let mut u = up.borrow_mut();
+        ui.set_auto_check(u.prefs.automatico);
+        // Nodo installato senza DLL: lo si dice subito (il servizio non può partire).
+        if u.installed() {
+            let state = u.dll_state();
+            if state == os_update::dll::DllState::Mancante {
+                show_dll(ui, &u, &state, false);
+            }
+        }
+        if u.due() {
+            u.start_check(false);
+        }
+    }
+    let u = up.clone();
+    ui.on_set_auto_check(move |on| u.borrow_mut().set_auto(on));
+    let (u, weak) = (up.clone(), ui.as_weak());
+    ui.on_check_updates(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.set_update_error(false);
+            ui.set_update_message("Cerco aggiornamenti…".into());
+        }
+        u.borrow_mut().start_check(true);
+    });
+    let (u, weak) = (up.clone(), ui.as_weak());
+    ui.on_apply_update(move || {
+        let Some(ui) = weak.upgrade() else { return };
+        let mut u = u.borrow_mut();
+        // Il DLL si controlla prima di cominciare: mancante blocca, sconosciuto chiede conferma.
+        let state = u.dll_state();
+        match state {
+            os_update::dll::DllState::Verificato { .. } => start_apply(&ui, &mut u, false),
+            _ => {
+                show_dll(&ui, &u, &state, true);
+                ui.set_update_error(true);
+                ui.set_update_message(if state == os_update::dll::DllState::Mancante { "Aggiornamento bloccato: manca il DLL." } else { "Serve una conferma: il DLL installato non è una versione verificata." }.into());
+            }
+        }
+    });
+    let (u, weak) = (up.clone(), ui.as_weak());
+    ui.on_confirm_update(move || {
+        if let Some(ui) = weak.upgrade() {
+            start_apply(&ui, &mut u.borrow_mut(), true);
+        }
+    });
+    let u = up.clone();
+    ui.on_open_release(move || {
+        let url = u.borrow().report.as_ref().map_or(os_update::github::RELEASES_PAGE.to_string(), |r| r.pagina.clone());
+        update::open_url(&url);
+    });
+    let u = up.clone();
+    ui.on_pick_dll(move || u.borrow_mut().pick_dll());
+}
+
+#[cfg(target_os = "linux")]
+fn show_dll(ui: &AppWindow, u: &Updater, state: &os_update::dll::DllState, updating: bool) {
+    let (level, text, confirm) = update::dll_alert(state, &u.paths.dll(), updating);
+    ui.set_dll_level(level);
+    ui.set_dll_text(text.into());
+    ui.set_dll_confirm(confirm);
+}
+
+#[cfg(target_os = "linux")]
+fn start_apply(ui: &AppWindow, u: &mut Updater, accept_unknown_dll: bool) {
+    ui.set_dll_level(0);
+    ui.set_dll_confirm(false);
+    ui.set_update_busy(true);
+    ui.set_update_error(false);
+    ui.set_update_message("Avvio l'aggiornamento…".into());
+    u.start_apply(accept_unknown_dll);
+}
+
+/// I messaggi dei thread degli aggiornamenti.
+#[cfg(target_os = "linux")]
+fn handle_messages(ui: &AppWindow, up: &Rc<RefCell<Updater>>) {
+    let msgs: Vec<Msg> = up.borrow().rx.try_iter().collect();
+    for msg in msgs {
+        let mut u = up.borrow_mut();
+        match msg {
+            Msg::Checked { result: Ok(r), manual } => {
+                u.checked();
+                match update::banner(&r, u.in_app) {
+                    Some(b) => {
+                        ui.set_update_banner(true);
+                        ui.set_update_title(b.title.into());
+                        ui.set_update_notes(b.notes.into());
+                        ui.set_update_action(b.action);
+                        ui.set_update_message("".into());
+                        // L'avviso sul DLL insieme all'aggiornamento che si potrebbe fare
+                        // (la conferma per un DLL non verificato si chiede al clic).
+                        if b.action == 1 {
+                            show_dll(ui, &u, &r.dll, false);
+                        }
+                    }
+                    None if manual => {
+                        ui.set_update_banner(false);
+                        ui.set_update_error(false);
+                        ui.set_update_message(format!("Nessun aggiornamento: {} è l'ultima versione.", r.ultima).into());
+                    }
+                    None => {}
+                }
+                u.report = Some(r);
+            }
+            Msg::Checked { result: Err(e), manual } => {
+                eprintln!("controllo degli aggiornamenti: {e}");
+                if manual {
+                    ui.set_update_error(true);
+                    ui.set_update_message(format!("Controllo non riuscito: {e}").into());
+                }
+            }
+            Msg::Progress(line) => ui.set_update_message(update::progress_text(&line).into()),
+            Msg::Done { code: 0, .. } => {
+                u.busy = false;
+                ui.set_update_banner(false);
+                ui.set_update_error(false);
+                ui.set_update_message("Aggiornamento installato: riapro la finestra…".into());
+                let exe = u.installed_ui();
+                Timer::single_shot(Duration::from_millis(1200), move || relaunch(&exe));
+            }
+            Msg::Done { code, error } => {
+                u.busy = false;
+                ui.set_update_busy(false);
+                ui.set_update_error(true);
+                match code {
+                    3 => {
+                        let st = os_update::dll::DllState::Mancante;
+                        show_dll(ui, &u, &st, true);
+                        ui.set_update_message("Aggiornamento bloccato: manca il DLL.".into());
+                    }
+                    4 => {
+                        let st = u.dll_state();
+                        show_dll(ui, &u, &st, true);
+                        ui.set_update_message("Serve una conferma: il DLL installato non è una versione verificata.".into());
+                    }
+                    _ => ui.set_update_message(format!("Aggiornamento non riuscito: {error}").into()),
+                }
+            }
+            Msg::DllPicked(Ok(None)) => {}
+            Msg::DllPicked(Ok(Some(state))) => {
+                let updating = ui.get_update_banner() && ui.get_update_action() == 1;
+                show_dll(ui, &u, &state, updating);
+                ui.set_update_error(false);
+                let what = match &state {
+                    os_update::dll::DllState::Verificato { versione, .. } => format!("{versione}, verificato"),
+                    _ => "versione non verificata".into(),
+                };
+                ui.set_update_message(format!("DLL copiato in {} ({what}). Se il servizio è attivo: systemctl --user restart open-surround", u.paths.dll().display()).into());
+            }
+            Msg::DllPicked(Err(e)) => {
+                ui.set_update_error(true);
+                ui.set_update_message(format!("DLL non copiato: {e}").into());
+            }
+        }
+    }
+}
+
+/// Riapre la finestra aggiornata al posto di questa, con gli stessi argomenti.
+#[cfg(target_os = "linux")]
+fn relaunch(exe: &Path) {
+    use std::os::unix::process::CommandExt;
+    let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).exec();
+    eprintln!("riapertura di {}: {err}", exe.display());
+    let _ = slint::quit_event_loop();
 }
 
 /// Immagine della finestra in PPM (P6), senza dipendenze in più: per le prove.

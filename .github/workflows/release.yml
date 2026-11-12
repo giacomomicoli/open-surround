@@ -3,6 +3,11 @@
 # (workflow_dispatch) lascia il pacchetto come artifact dell'esecuzione. Il DLL di Dolby non c'è:
 # lo aggiunge chi scarica.
 #
+# Firma (doc 12.15, "Aggiornamenti"): il tar.gz è firmato con minisign usando il secret
+# MINISIGN_KEY (chiave segreta senza password; la pubblica è dist/linux/minisign.pub, compilata
+# in os-update). Il .minisig va nella release accanto al .sha256; os-update rifiuta i pacchetti
+# senza firma valida. Per un tag il secret è obbligatorio.
+#
 # Build in Debian 13: è la base stabile più vecchia con PipeWire >= 1.2, che serve al nodo
 # (spa_io_clock.cycle, PW_STREAM_FLAG_ASYNC). Ubuntu 22.04 e Debian 12 non compilano libspa o il
 # nodo; Ubuntu 24.04 ha PipeWire 1.0. I binari chiedono glibc 2.39.
@@ -38,15 +43,41 @@ jobs:
         id: ver
         shell: bash
         run: |
+          v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
           if [ "$GITHUB_REF_TYPE" = tag ]; then
-            echo "v=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            # I binari dicono la versione di Cargo.toml: deve essere quella del tag.
+            if [ "${GITHUB_REF_NAME#v}" != "$v" ]; then
+              echo "::error::il tag $GITHUB_REF_NAME non corrisponde a [workspace.package] version = \"$v\" in Cargo.toml"
+              exit 1
+            fi
+            echo "v=$v" >> "$GITHUB_OUTPUT"
           else
-            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
             echo "v=$v-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Pacchetto
+        env:
+          OS_GIT_COMMIT: ${{ github.sha }}
         run: dist/linux/package.sh "${{ steps.ver.outputs.v }}"
+
+      - name: Firma (minisign)
+        shell: bash
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+          OS_GIT_COMMIT: ${{ github.sha }}
+        run: |
+          f=target/dist/open-surround-${{ steps.ver.outputs.v }}-linux-x86_64.tar.gz
+          if [ -z "$MINISIGN_KEY" ]; then
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              echo "::error::manca il secret MINISIGN_KEY: una release senza firma non si aggiorna dalla finestra"
+              exit 1
+            fi
+            echo "::warning::secret MINISIGN_KEY assente: pacchetto non firmato"
+            exit 0
+          fi
+          cargo run --locked -q -p os-update --example firma -- firma - "$f"
+          # La chiave segreta deve corrispondere alla pubblica compilata in os-update.
+          cargo run --locked -q -p os-update --example firma -- verifica dist/linux/minisign.pub "$f"
 
       - name: Prova del pacchetto (avvio dei binari, niente audio)
         shell: bash
@@ -54,6 +85,9 @@ jobs:
           d=target/dist/open-surround-${{ steps.ver.outputs.v }}-linux-x86_64
           "$d/bin/os-pipewire" --help > /dev/null
           "$d/bin/os-ctl" --help
+          "$d/bin/os-ctl" versione
+          "$d/bin/os-update" versione
+          cat "$d/versione.json"
           "$d/open-surround" --help
           bash -n "$d/install.sh"
 
