@@ -11,7 +11,7 @@
 #
 # Uso:
 #   docs/reference/verify-pipewire.sh [DLL] [filtro-profilo]
-#     DLL            DolbyAudioProcessing.dll (default ~/Documenti/dolby-bins/…)
+#     DLL            DolbyAudioProcessing.dll (default ~/.local/share/open-surround/…, dove lo copia install.sh)
 #     filtro-profilo elabora solo le cartelle il cui nome contiene la stringa
 #   LATENCY=<n> …    chiede al grafo un quantum di n frame (node.latency, es. 480 o 256)
 #   NODE_ARGS="…" …  argomenti in più per os-pipewire (es. --no-route)
@@ -22,7 +22,7 @@
 set -u
 cd "$(dirname "$0")/../.."
 
-DLL="${1:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
+DLL="${1:-$HOME/.local/share/open-surround/DolbyAudioProcessing.dll}"
 FILTER="${2:-}"
 LATENCY="${LATENCY:-}"
 NODE_ARGS="${NODE_ARGS:-}"

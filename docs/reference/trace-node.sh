@@ -13,7 +13,7 @@ set -u
 cd "$(dirname "$0")/../.."
 S=target/trace-node
 mkdir -p "$S"
-DLL="${1:-$HOME/Documenti/dolby-bins/DolbyAudioProcessing.dll}"
+DLL="${1:-$HOME/.local/share/open-surround/DolbyAudioProcessing.dll}"
 SIG=target/verify-pipewire/signals
 NULL=os-trace-null
 FIFO="${XDG_RUNTIME_DIR:-/dev/shm}/os-trace-control"

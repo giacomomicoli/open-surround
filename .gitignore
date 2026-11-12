@@ -2,3 +2,6 @@
 /.vs/
 *.wav
 /verify-*.tar.gz
+
+# il modulo di Dolby non va mai nel repository
+*.dll

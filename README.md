@@ -1,135 +1,84 @@
 # open-surround
 
-**Dolby Atmos for Headphones on Linux, with exactly the same sound as Windows.**
+**Dolby Atmos for Headphones on Linux, using Dolby's own audio engine.**
 
-open-surround runs the original Dolby audio processing module that ships with Dolby Access on
-Windows (`DolbyAudioProcessing.dll`, DAP 7.3.7) outside of the Windows audio stack, feeds it the
-same profile data that Dolby Access writes, and produces the same binaural output, bit for bit.
-The goal is to use a Dolby Access license you already own on Linux, with every profile and
-setting of the Windows app (Game, Movie, Music, Voice, Custom 1-3, intelligent equalizer,
-graphic equalizer, volume leveler, virtualizer) and no audible difference.
+On Windows, Dolby Atmos for Headphones turns game and movie surround sound into binaural audio
+for any pair of headphones, and lets you pick between profiles (Game, Movie, Music, Voice and
+three custom ones) with an equalizer and a volume leveler. There is no Linux version.
 
-> **Status: work in progress.** Phases 0-4 of the [roadmap](#roadmap) are done: the original
-> module runs on Linux through a native PE loader (no Wine), and a PipeWire node (`os-pipewire`)
-> runs it in real time with a virtual 7.1 sink for games and a stereo sink for regular
-> applications, reproducing the Windows output to within float32 rounding, on the synthetic test
-> signals and on 194 s of real 5.1 audio alike, with graph quanta of 1024 and 480 frames. Like
-> Windows, the node starts a fresh module for every listening session, applies a profile change to
-> the running module through `HandleNotification`, and routes streams that follow the default
-> sink to the games or the applications sink by their channel count. Phase 5 is done (section
-> 12.14 of the analysis): a profile model with the controls of the app (`os-profiles`) generates
-> the Dolby context byte for byte identical to what Dolby Access writes, for all 19 captured
-> states and 17 targeted captures (graphic equalizer, switches, "Default" buttons), and imports
-> captured blobs back into a profile. The node and the offline renderer take a profile
-> (`--profile film:warm`) instead of a capture, with output byte for byte identical in all 77
-> regression cases. Phase 6, the user interface, is done on Linux (section 12.15): a settings
-> window with the controls of Dolby Access drives the node, which runs as a user service and
-> remembers the profile; the Windows build of the window is left.
+open-surround brings it to Linux. Instead of imitating Dolby's processing, it runs the real
+thing: the `DolbyAudioProcessing.dll` module that Dolby Access installs on Windows, loaded
+directly on Linux and plugged into PipeWire. You get two new audio outputs on your desktop, a
+small settings window with the same controls as the Windows app, and the same sound: in every
+test, the output matches what Windows produces to within floating-point rounding.
 
-## Verified results
+![The settings window](docs/os-ui.png)
 
-Every state reachable from the Dolby Access UI (19 configurations: Game ×5, Movie ×4,
-Music ×4, Voice, Custom 1 with virtualizer on/off and leveler off, Custom 2, Custom 3) was
-recorded on Windows through `ISpatialAudioClient` plus endpoint loopback, then reproduced
-offline by open-surround with the same profile blobs — on Windows with the system loader
-(phase 1) and on Linux with the native PE loader (phase 3):
+> **Before you start**
+> - The Dolby module is **not included**. You copy it from your own Windows installation of
+>   Dolby Access (see [Getting the DLL](#getting-the-dll)). Use it only if you have a Dolby
+>   Access license.
+> - Linux on x86-64 with PipeWire. A prebuilt package is available; building from source is
+>   also possible.
+> - The settings window and the command-line messages are in Italian for now. The labels map
+>   one to one to Dolby Access (Film = Movie, Musica = Music, Voce = Voice, Personalizzato =
+>   Custom, Predefinito = Default).
+> - This is a personal project, tested on one machine. It works well there, but expect rough
+>   edges.
 
-| Signal | Residual vs Windows |
-|---|---|
-| Pink noise on each 7.1 channel, dynamic 7.1 (−40…0 dBFS steps), stereo as game bed | −148.7 … −149.0 dB (float32 rounding) |
-| Stereo from a regular application (bypass objects) | −134 … −147 dB |
-| Real Atmos content (5.1 core, 194 s) on Movie, Game, Custom 1 | −148.8 dB |
+## What you get
 
-On Linux, all 74 saved captures replay with the same numbers as the Windows host, case by
-case (`docs/reference/regress-linux.sh`): beds and dynamics at −148.7…−149.0 dB, application
-stereo at −134.0…−147.4 dB, estimated gain 0.000 dB everywhere. The same 74 cases played through
-PipeWire into the real-time node and recorded from its output give the same residuals, case by
-case (`docs/reference/verify-pipewire.sh`), and so do the 3 real-audio tracks; the node adds no
-latency beyond the module's own 512 frames (10.7 ms). The node's recorded output is
-bit-identical to the offline render, with the default graph quantum of 1024 frames and with the
-graph forced to 480 frames.
+- **Two virtual outputs** in your sound settings:
+  - *open-surround stereo (applicazioni)* for everyday applications (browser, music player,
+    video calls);
+  - *open-surround 7.1 (giochi)* for games and movies with surround sound (5.1, 7.1 or
+    7.1.4).
 
-Two behaviours of the real module were measured on Windows with an ETW trace and reference
-recordings, and reproduced by the node: two sessions separated by a pause both match the
-recording of a fresh module (−148.9 dB), as Windows destroys the module when the last stream is
-released; a profile change during playback, delivered to the same instance as the same
-`HandleNotification` calls Windows makes, matches the Windows recording over the whole track
-(−148.9 dB) when it changes the leveler or the equalizer. When it switches the virtualizer off,
-the 22 ms crossfade differs, most likely because Windows delivers the notification on another
-thread while the module is processing, and the output matches again right after it.
+  Both are processed by Dolby's module and played as binaural stereo on your real headphones.
+  When one of them is your default output, applications with more than two channels are moved
+  to the 7.1 one automatically.
+- **All the Dolby Access headphone settings**: the seven profiles, each remembering its own
+  settings; the intelligent equalizer (Detailed, Balanced, Warm, Off); Game's performance mode;
+  and, in the custom profiles, the surround virtualizer, the volume leveler and the 10-band
+  graphic equalizer.
+- **A background service**: the audio processing runs as a systemd user service, so closing
+  the window keeps the sound, and the last profile is restored at login.
+- **Updates from the window**: when a new release is out, the window offers to install it.
 
-The estimated gain difference is 0.000 dB in every case. Details, including the Windows gain
-chain (−3 dB → Dolby → endpoint volume) and how application stereo differs from game beds, are
-in the [analysis document](docs/analisi-dolby-access.md) (Italian), sections 12.8-12.10.
-
-## Repository layout
+## How it works
 
 ```
-crates/
-├─ os-dap-core/   platform-independent core (no Windows dependencies)
-│   ├─ layout.rs    beds, bypass and dynamic objects, encoder config, channel maps, input gain
-│   ├─ abi.rs       in-memory structures read by EncodeAudioData (ObjectEntry, GranuleMeta, …)
-│   ├─ props.rs     profile blobs from captures, endpoint properties
-│   ├─ engine.rs    ModuleSetup, the Backend trait, Engine (buffers, metadata, block processing)
-│   ├─ options.rs   module options shared by the offline renderer and the PipeWire node
-│   ├─ realtime.rs  Streamer: graph cycles of any length → fixed module blocks, sessions, volume
-│   └─ offline.rs   command line and WAV → WAV rendering, identical on every platform
-├─ os-dap-host/    Windows backend: system loader, IAT hooks, in-memory COM objects
-├─ os-pe-loader/   native PE32+ loader for Linux: sections, relocations, imports, TLS, DllMain,
-│                  synthetic TEB/PEB + GS base, Rust shims of the imported Windows APIs
-├─ os-dap-linux/   Linux backend: same COM sequence as the Windows shell, on top of the loader
-├─ os-pipewire/    Linux real time: PipeWire node (two virtual sinks → module → binaural output)
-│                  and os-pw-latency (latency measured inside the graph)
-├─ os-profiles/    Dolby Access profiles (phase 5): profile model → the endpoint's Dolby context
-│                  values, identical byte for byte, import back, and os-blob (dump, diff, check,
-│                  import); settings of the UI (phase 6), control socket client and os-ctl
-├─ os-ui/          settings window (Slint), with the controls of Dolby Access
-├─ os-update/      update check and signed in-place update from a GitHub release (os-update)
-└─ os-verify/      reference tools: ref-capture (Windows recording) and wavcmp (comparison)
-dist/linux/        systemd user unit, menu entry, install.sh, prebuilt package (package.sh, launcher),
-                   minisign.pub (public key of the release signatures)
-.github/workflows/ release.yml: the signed prebuilt Linux package on every v* tag
-docs/
-├─ analisi-dolby-access.md   full analysis: interface reconstruction, blob format, verification (Italian)
-└─ reference/                capture and verification scripts, captured profile blobs
+ applications ──► open-surround stereo ─┐
+                                        ├─► DolbyAudioProcessing.dll ──► your headphones
+ games, films ──► open-surround 7.1 ────┘   (run by os-pipewire)
+
+ settings window (os-ui) ──► control socket ──► os-pipewire
 ```
 
-A platform backend only has to implement `os_dap_core::Backend`:
+- **A loader for Windows DLLs, written in Rust.** `DolbyAudioProcessing.dll` is a Windows
+  library. open-surround loads it into a Linux process itself: it maps the file into memory,
+  links its imports to small Rust replacements of the Windows functions it uses, and then calls
+  it exactly as Windows' audio engine does. No Wine, no virtual machine.
+- **A PipeWire node** (`os-pipewire`) creates the two virtual outputs, feeds the module the same
+  data Windows would (surround channels for games, stereo for applications, the profile
+  settings), and sends the result to your headphones. It follows Windows' behaviour in the
+  details too: a fresh module for every listening session, profile changes applied while
+  playing, volume applied after the processing.
+- **A settings window** (`os-ui`) turns your choices into the same profile data Dolby Access
+  writes on Windows, byte for byte, and sends them to the node over a local socket.
 
-```rust
-pub trait Backend: Sized {
-    /// Load the module and run DllGetActivationFactory → Initialize →
-    /// SetAPOInitParameters → ConfigureEncoder with the data in `setup`.
-    fn open(setup: &ModuleSetup) -> Result<Self>;
-    /// IDAPModule2::EncodeAudioData.
-    unsafe fn encode(&mut self, input: *mut EncodeInput, out: *mut f32) -> Result<()>;
-    // Optional, for real time: reconfigure() (ConfigureEncoder again, a fresh module) and
-    // change_properties() (new profile blobs plus HandleNotification, same instance).
-}
-```
-
-## Requirements
-
-- Rust (stable, 2021 edition).
-- `DolbyAudioProcessing.dll` from **your own** Dolby Access installation. It is not included and
-  never will be: see [Getting the DLL](#getting-the-dll).
-- Profiles: either a state of the built-in profile model (`--profile film:warm`), which
-  generates the same values Dolby Access writes, or profile blobs captured on Windows with
-  `docs/reference/capture_asar.ps1` or `ref-capture` (`--capture`).
-- For real time on Linux: PipeWire (developed with 1.6) with the `libpipewire-0.3` and
-  `libspa-0.2` headers, and libclang for the bindings; `pw-play`, `pw-record`, `wpctl` for the
-  verification script.
-- For verification: ffmpeg (test signals) and a Windows machine with Dolby Access and an
-  endpoint with Dolby Atmos for Headphones enabled.
+The [analysis document](docs/analisi-dolby-access.md) (in Italian) covers how all of this was
+worked out and checked.
 
 ## Getting the DLL
 
-open-surround needs `DolbyAudioProcessing.dll`, Dolby's audio processing module, taken from a
-Windows PC where Dolby Access is installed and Dolby Atmos for Headphones is enabled. It is
-not in this repository or in the releases.
+open-surround needs `DolbyAudioProcessing.dll`, Dolby's audio processing module. It is Dolby's
+proprietary software, so it is not in this repository or in the releases, and never will be:
+you take it from a Windows PC where Dolby Access is installed and Dolby Atmos for Headphones is
+enabled.
 
-**1. Find it on Windows.** Windows installs it with the Dolby audio components, outside the
-Dolby Access app folder. In PowerShell **as administrator**:
+**1. Find it on Windows.** The module comes with Dolby Access's audio components. This command
+searches the places where Windows keeps them; run it in PowerShell **as administrator**:
 
 ```powershell
 Get-ChildItem C:\Windows\System32, 'C:\Program Files\WindowsApps' -Recurse `
@@ -139,295 +88,244 @@ Get-ChildItem C:\Windows\System32, 'C:\Program Files\WindowsApps' -Recurse `
 
 If there is more than one copy, take the most recent version.
 
-**2. Copy it to the Linux machine** (USB stick, network share, `scp`). Check it with
-`sha256sum DolbyAudioProcessing.dll`. Everything in this repository was verified with DAP
-7.3.7 (`7.3.7.rel`):
+**2. Copy it to your Linux machine** (USB stick, network share, `scp`) and check it with
+`sha256sum DolbyAudioProcessing.dll`. open-surround was verified with DAP 7.3.7 (`7.3.7.rel`),
+whose SHA-256 is:
 
 ```
 0fada40251880d03c657a357745d362799c93fb6024f733f1c8bf1057f5e4715
 ```
 
-Other versions may work, but they were not verified.
+Other versions may work, but they have not been tested.
 
 **3. Put it where open-surround looks for it:**
 
 | How you run it | Where the DLL goes |
 |---|---|
-| Prebuilt package, `./open-surround` | the extracted package folder, next to the `open-surround` script (or pass `--dll <file>`) |
-| Prebuilt package, `./install.sh` | the extracted package folder, or pass its path: `./install.sh /path/to/DolbyAudioProcessing.dll` |
-| From the repository, `dist/linux/install.sh` | anywhere: pass its path, `dist/linux/install.sh /path/to/DolbyAudioProcessing.dll` |
+| Prebuilt package, `./open-surround` or `./install.sh` | the extracted package folder, next to the `open-surround` script |
+| Built from source, `dist/linux/install.sh` | anywhere: pass its path, `dist/linux/install.sh /path/to/DolbyAudioProcessing.dll` |
 | `os-pipewire` or `os-dap-linux` by hand | anywhere: `--dll /path/to/DolbyAudioProcessing.dll` |
 
-Both installers copy it to `~/.local/share/open-surround/DolbyAudioProcessing.dll`, where the
-service reads it. After installing, the original can be moved or deleted. To replace it later,
-copy the new file over that path, then run `systemctl --user restart open-surround`.
+Installing copies it to `~/.local/share/open-surround/DolbyAudioProcessing.dll`, where the
+service reads it, so you can delete the original afterwards. To replace it later, copy the new
+file over that path and run `systemctl --user restart open-surround`.
 
-## Building and usage
+## Installing
 
-Same command line on both platforms; only the backend changes.
+### Requirements
 
-Windows:
+- Linux on x86-64 with PipeWire 1.2 or newer and glibc 2.39 or newer: Debian 13, Ubuntu 25.04,
+  Fedora 41, Arch, and anything newer. (Ubuntu 24.04 ships PipeWire 1.0, which is too old.)
+- Your copy of `DolbyAudioProcessing.dll` ([above](#getting-the-dll)).
+
+### Prebuilt package
+
+1. Download `open-surround-<version>-linux-x86_64.tar.gz` from the
+   [releases page](https://github.com/giacomomicoli/open-surround/releases) and extract it:
+
+   ```
+   tar -xzf open-surround-<version>-linux-x86_64.tar.gz
+   cd open-surround-<version>-linux-x86_64
+   ```
+
+2. Copy your `DolbyAudioProcessing.dll` into that folder.
+
+3. Install it into your home directory and start the service:
+
+   ```
+   ./install.sh
+   systemctl --user enable --now open-surround
+   ```
+
+   Nothing is installed system-wide and no root access is needed: the programs go to
+   `~/.local/bin`, the DLL and the install record to `~/.local/share/open-surround`, plus a
+   systemd user unit and a menu entry.
+
+4. In your sound settings, choose **open-surround stereo** as the output (or **open-surround
+   7.1** if you mostly play games), and open **open-surround** from the application menu to pick
+   a profile.
+
+You don't need to connect anything else: open-surround sends the processed sound on to your
+headphones by itself, and PipeWire picks the device as it does for other virtual outputs.
+
+**Just trying it out?** Skip step 3 and run `./open-surround` from the package folder. It starts
+the processing and the window together; closing the window stops both. Both ways share the same
+settings file.
+
+### Using it
+
+- Profile changes from the window take effect immediately, while audio is playing. They are
+  saved to `~/.config/open-surround/settings.json`.
+- Games and players with 5.1/7.1 output are moved to the 7.1 output by themselves when your
+  default output is one of the two. A stream you sent to a specific device yourself is left
+  alone.
+- `os-ctl stato` shows what the service is doing; `os-ctl versione` shows the installed version.
+- `journalctl --user -u open-surround` shows the service log.
+
+### Updating
+
+When the window starts (at most once a day) or when you press **Cerca aggiornamenti**, it asks
+GitHub whether there is a newer release. That is a single anonymous request to the GitHub
+releases API; nothing about you or your system is sent. You can turn the automatic check off
+with **Controlla all'avvio**.
+
+If you installed from the prebuilt package, **Aggiorna** installs the new version in place and
+reopens the window. From a terminal, the same is:
 
 ```
-cargo build
-target\debug\os-dap-host --capture docs\reference\captures\current-2026-11-02 ^
-    --capture docs\reference\captures\movie-balanced --endpoint 32ed16b6 in71.wav out.wav
+os-update check
+os-update apply
 ```
 
-Linux (x86-64):
+Every package is signed. Before replacing anything, `os-update` checks the signature against
+the public key built into it ([`dist/linux/minisign.pub`](dist/linux/minisign.pub)) and the
+SHA-256, keeps a copy of the installed programs, and puts them back if the new service does not
+start. Your settings and the DLL are not touched. If the installed DLL is not the verified
+version it asks before going ahead; if it is missing, the window lets you pick it (**Scegli il
+DLL…**).
+
+If you built from source, or run the package without installing, the window only links to the
+new release: update the repository and run `dist/linux/install.sh` again, or download the new
+package.
+
+To check a package by hand: `minisign -Vm open-surround-<version>-linux-x86_64.tar.gz -p
+dist/linux/minisign.pub`.
+
+### Uninstalling
 
 ```
-cargo build
-target/debug/os-dap-linux --profile gaming:performance \
-    --dll /path/to/DolbyAudioProcessing.dll --volume-db -9.3428 \
-    target/verify/signals/canali71.wav out.wav
+./install.sh --uninstall
 ```
 
-`--profile` and `--capture` are interchangeable: for every captured state the generated blobs
-are identical, so is the output. `os-blob import <capture folder>` prints the state of a capture.
+(`dist/linux/install.sh --uninstall` if you built from source.) This stops the service and
+removes the programs, the service and the menu entry. Your settings
+(`~/.config/open-surround`) and the DLL copy (`~/.local/share/open-surround`) are kept; delete
+them by hand if you want.
 
-Input is a 48 kHz WAV with 1, 2, 6 (5.1), 8 (7.1) or 12 (7.1.4) channels; output is binaural
-stereo float32. Main options (`--help` for all of them):
+## Building from source
 
-| Option | Meaning |
-|---|---|
-| `--profile <state>` | profile generated by the model: `gaming\|film\|music:<off\|balanced\|warm\|detailed>` (`gaming:performance` = `off`), `voice`, `custom1\|2\|3[:virt=on\|off][:leveler=on\|off][:geq=<10 values, 1/16 dB, 32 Hz…16 kHz>]` |
-| `--capture <dir>` | capture folder with profile blobs instead of `--profile`; repeatable, later folders override earlier ones |
-| `--change <frame>:<state or dir>` | live profile change from that frame, as Dolby Access does |
-| `--endpoint <hex8>` | endpoint to take from the captures |
-| `--mode cuffie\|speaker` | headphones (default) or built-in speakers |
-| `--stereo-bypass` | treat stereo input like a regular application (bypass objects, 0 dB) instead of a game bed |
-| `--gain-db`, `--volume-db` | gain before the module (default −3 dB like Windows) and endpoint volume after it |
-| `--dll <file>` | path to `DolbyAudioProcessing.dll` |
-| `-v` | trace the module's calls into the host and print its internal log |
-
-### Installing on Linux (node as a service, settings window)
+You need Rust (stable), the PipeWire development headers (`libpipewire-0.3`, `libspa-0.2`) and
+libclang. Then:
 
 ```
+git clone https://github.com/giacomomicoli/open-surround
+cd open-surround
 dist/linux/install.sh /path/to/DolbyAudioProcessing.dll
 systemctl --user enable --now open-surround
 ```
 
-`install.sh` builds in release mode and installs into your home directory only:
-- `os-pipewire`, `os-ui`, `os-ctl`, `os-blob` and `os-update` into `~/.local/bin`;
-- a copy of the DLL into `~/.local/share/open-surround` (without an argument it keeps the copy
-  already installed);
-- `~/.local/share/open-surround/installed.json`: version, commit, where the install comes from
-  (`repo` or `release`) and the SHA-256 of the DLL;
-- the user unit `open-surround.service`;
-- the `open-surround` menu entry.
+`install.sh` builds in release mode and installs the same files as the prebuilt package. Run it
+again after a `git pull` to update (without an argument it keeps the installed DLL).
+`dist/linux/package.sh` builds the prebuilt package locally; it then needs the glibc of the
+machine it was built on, while the published packages are built on Debian 13.
 
-It does not start anything itself: `systemctl --user enable --now open-surround` starts the node
-now and at every login. Then make `open-surround-stereo` (or `open-surround-7.1`) your default
-sink and open **open-surround** from the menu.
+### Command-line tools
 
-![The settings window](docs/reference/os-ui-l3.png)
-
-The window (`os-ui`) has the controls of Dolby Access: the seven profiles, each remembering
-its own settings, the intelligent equalizer presets, the Game performance mode, the Custom
-profiles' virtualizer, volume leveler and 10-band graphic equalizer, and "Default". Every change
-is saved to `~/.config/open-surround/settings.json` and sent to the running node at once. The
-node starts from the saved profile (`--settings`) and takes changes on its control socket
-(`--socket`, `$XDG_RUNTIME_DIR/open-surround/control.sock`), so closing the window keeps the
-sound, and restarting the node keeps the profile. `os-ctl stato` prints what the node is doing,
-`os-ctl versione` the version and commit of `os-ctl` and of the running node.
-`dist/linux/install.sh --uninstall` removes everything except your settings and the DLL copy.
-
-### Prebuilt package (Linux x86_64, no build needed)
-
-Each `v*` tag gets `open-surround-<version>-linux-x86_64.tar.gz` on its GitHub release,
-built by `.github/workflows/release.yml` with `dist/linux/package.sh`. It does not contain
-Dolby's module: download it from the
-[releases page](https://github.com/giacomomicoli/open-surround/releases) and extract it
-(`tar -xzf open-surround-<version>-linux-x86_64.tar.gz`). Then copy your
-`DolbyAudioProcessing.dll` ([Getting the DLL](#getting-the-dll)) into the extracted folder:
+The service is just `os-pipewire` with a few options, and the same engine is available as an
+offline renderer. Both take `--help`.
 
 ```
-open-surround-<version>-linux-x86_64/
-├─ DolbyAudioProcessing.dll   ← your copy goes here
-├─ open-surround
-├─ install.sh
-├─ bin/  share/  LEGGIMI.txt  …
+# real time: the two virtual outputs, with a profile, without the service
+target/release/os-pipewire --profile film:balanced --dll /path/to/DolbyAudioProcessing.dll
+
+# offline: a 48 kHz WAV (stereo, 5.1, 7.1 or 7.1.4) to binaural stereo
+target/release/os-dap-linux --profile gaming:performance \
+    --dll /path/to/DolbyAudioProcessing.dll in.wav out.wav
 ```
 
-and either
+Profiles are written as `gaming|film|music:<off|balanced|warm|detailed>`, `voice`, or
+`custom1|2|3[:virt=on|off][:leveler=on|off][:geq=<10 values in 1/16 dB, 32 Hz…16 kHz>]`.
 
-```
-./open-surround        # run without installing: node + window, closing the window stops the node
-./install.sh           # or install it as above, from the package's binaries
-```
-
-`./open-surround --senza-finestra` runs only the node, `--dll <file>` takes the DLL from
-elsewhere. If a node is already running (the installed service) it opens only the window. Both
-ways share `~/.config/open-surround/settings.json`. The package is built in Debian 13 and needs
-glibc 2.39 and PipeWire 1.2 or newer. `dist/linux/package.sh` builds the same package locally (it
-then needs the glibc of the machine it was built on).
-
-### Updating
-
-The window checks GitHub for a newer release when it starts, at most once a day ("Controlla
-all'avvio" turns it off), and on "Cerca aggiornamenti". The check is one anonymous HTTPS request
-to the GitHub releases API; nothing about you or your system is sent. When there is a newer
-release, a banner shows its version and release notes.
-
-- **Installed from a release package** (`./install.sh` from the extracted package):
-  "Aggiorna" installs it in place and reopens the window. The same from a terminal:
-
-  ```
-  os-update check
-  os-update apply
-  ```
-
-  `os-update apply` downloads the package into `~/.cache/open-surround/`, checks its minisign
-  signature against the public key built into `os-update` (`dist/linux/minisign.pub`) and its
-  SHA-256, extracts only the expected files, backs up the installed programs, replaces them, and
-  restarts the `open-surround` service if it was running. If the updated node does not answer,
-  the previous programs are put back. Your settings and the DLL are not touched.
-- **Built from the repository** (`dist/linux/install.sh`) or **run from the package without
-  installing**: the banner only links to the release. Update the repository and run
-  `dist/linux/install.sh` again (no argument needed: it keeps the installed DLL), or download
-  the new package.
-
-Before replacing anything, the update checks the installed DLL
-(`~/.local/share/open-surround/DolbyAudioProcessing.dll`): the verified version (DAP 7.3.7) goes
-ahead; a DLL with another hash asks for confirmation ("Aggiorna comunque",
-`os-update apply --dll-non-verificato`); a missing DLL blocks the update, and the window offers
-"Scegli il DLL…" to pick your copy (`os-update dll <file>` from a terminal).
-
-To verify a release by hand: `minisign -Vm open-surround-<version>-linux-x86_64.tar.gz -p
-dist/linux/minisign.pub`.
-
-### Real time on Linux (PipeWire)
-
-`os-pipewire` takes the same module options and creates two virtual sinks in front of the
-module plus a binaural stereo output, all in one PipeWire node group:
-
-```
-cargo build --release
-target/release/os-pipewire --profile film:balanced \
-    --dll /path/to/DolbyAudioProcessing.dll
-```
-
-| Node | Role |
+| Program | What it does |
 |---|---|
-| `open-surround-7.1` (`--channels 12`: `open-surround-7.1.4`) | games: the channels go to the module's beds with −3 dB, like a spatial audio client on Windows |
-| `open-surround-stereo` | regular applications: the two bypass objects at 0 dB, like a plain WASAPI stream on Windows |
-| `open-surround-output` | binaural output, linked to the default device or to `--target <node>` |
+| `os-pipewire` | the PipeWire node; `--socket` for the control socket, `--target <node>` for the output device, `--no-route` to turn off automatic routing, `--channels 12` for a 7.1.4 games output |
+| `os-ui` | the settings window |
+| `os-ctl` | sends one command to the running node (`stato`, `versione`, `profilo <profile>`) |
+| `os-update` | checks for and installs updates |
+| `os-dap-linux` | offline renderer on Linux |
+| `os-dap-host` | the same offline renderer on Windows, with Windows' own loader (used to compare the two) |
+| `os-blob` | reads, compares and decodes Dolby Access profile data |
 
-Both sinks feed the same `EncodeAudioData` call in the same graph cycle, as on Windows. Their
-volume (one value shared by the two sinks, like a Windows endpoint) is applied after the module,
-where Windows applies the endpoint volume; the signal entering the module is never scaled.
+The node adds no latency of its own when the PipeWire quantum is a multiple of 256 frames; the
+Dolby module itself delays the signal by 512 frames (10.7 ms), and both are reported to
+PipeWire.
 
-The module is only called while a sink receives audio. When the last stream linked to the two
-sinks goes away, the module is reconfigured, so the next session starts from a clean module
-state, as on Windows, which creates a new module for every stream (the volume leveler remembers
-what it processed). `--idle-ms <n>` also resets it after n ms of silence with streams still linked.
+## How accurate is it?
 
-Profile changes during playback: the settings window uses the control socket (`--socket <path>`;
-one command per connection, one `ok …`/`errore …` reply line; `os-ctl` sends one from a shell).
-With `--control <fifo>` the node reads commands from a FIFO
-(created if missing), one per line. `profilo <state>` (or `profilo <capture folder>`) hands the
-module the blobs of that profile on the same instance, with the notifications Windows sends when Dolby Access writes
-a profile, so the leveler state survives the change as on Windows:
+Every profile state reachable from Dolby Access (19 of them, plus 17 targeted captures of the
+graphic equalizer and switches) was recorded on Windows and reproduced by open-surround with the
+same input:
+
+| Signal | Difference from Windows |
+|---|---|
+| Surround test signals (7.1 pink noise per channel, dynamic levels, stereo as game audio) | −148.7 … −149.0 dB (float32 rounding) |
+| Stereo from an ordinary application | −134 … −147 dB |
+| Real Dolby Atmos content (5.1, 194 s) on Movie, Game, Custom 1 | −148.8 dB |
+
+The same numbers hold for the offline renderer on Windows and Linux and for the live PipeWire
+node, at different PipeWire quantum sizes, across separate listening sessions and with profile
+changes during playback. The profile data generated by the settings window is byte-identical to
+what Dolby Access writes. Details are in sections 12.8-12.15 of the
+[analysis document](docs/analisi-dolby-access.md).
+
+## For developers
+
+### Repository layout
 
 ```
-target/release/os-pipewire --profile film:balanced --dll … --control /run/user/$UID/os-control &
-echo "profilo music:warm" > /run/user/$UID/os-control
+crates/
+├─ os-pe-loader/   native PE32+ loader for Linux and Rust shims of the Windows APIs the module imports
+├─ os-dap-core/    platform-independent core: module setup, buffers, metadata, real-time streaming
+├─ os-dap-linux/   Linux backend (on the loader) and the offline renderer
+├─ os-dap-host/    Windows backend (system loader) and the offline renderer
+├─ os-pipewire/    the PipeWire node, plus os-pw-latency (measures latency inside the graph)
+├─ os-profiles/    profile model → Dolby Access profile data; settings, control socket, os-ctl, os-blob
+├─ os-ui/          settings window (Slint)
+├─ os-update/      update check and signed in-place update from a GitHub release
+└─ os-verify/      reference tools: ref-capture (Windows recording) and wavcmp (comparison)
+dist/linux/        install.sh, package.sh, launcher, systemd unit, menu entry, release public key
+docs/
+├─ analisi-dolby-access.md   the full analysis and development log (Italian)
+└─ reference/                capture and verification scripts, captured profile data
 ```
 
-Routing: when the default sink is one of the two, a stream that did not pick a sink itself goes to
-`open-surround-7.1` if it has more than 2 channels and to `open-surround-stereo` otherwise. The
-node sets the stream's `target.object` in the `default` metadata, as pavucontrol does when the user
-moves a stream, and WirePlumber relinks it; the format is known once the stream is linked, so
-its first cycles may play in the other sink. A stream with its own target (`pw-play --target`,
-`PULSE_SINK`, `node.target`, `node.dont-move`) or moved by the user is left alone. `--no-route`
-turns the rule off. So the usual setup is: make `open-surround-stereo` (or `open-surround-7.1`)
-the default sink, and games with 5.1/7.1 output land in the games sink by themselves.
-PipeWire upmixes stereo streams played into the 7.1 sink unless the client sets
-`channelmix.upmix = false`.
-The node adds no latency when the graph quantum is a multiple of 256 frames (256, 512,
-1024…) and less than 256 frames otherwise; the module itself delays the signal by 512 frames
-(10.7 ms). Both are announced to the graph (`ProcessLatency`), so players can compensate.
-`os-pw-latency` measures what the node adds inside the graph. Other options: `--help`.
+A platform backend only has to implement `os_dap_core::Backend` (`open`, `encode`, and
+optionally `reconfigure` and `change_properties` for real time).
 
-## Verification workflow
+### Verification
 
-- `docs/reference/verify-profile.ps1 -Name <profile>`: with the profile selected in Dolby Access,
-  plays the test signals on Windows, records the processed loopback and the profile blobs, renders
-  the same signals with open-surround and compares them.
-- `docs/reference/regress-host.ps1 [-Baseline <exe>]`: replays every saved capture in
-  `target/verify` without Dolby Access, compares against the Windows loopback and optionally
-  against another build byte for byte. This is the acceptance test for every later phase.
-- `docs/reference/fase4-windows.ps1 -Step controllo|sessioni|cambio` (administrator PowerShell):
-  records sessions separated by pauses and live profile changes with `ref-capture` while an ETW
-  session collects the log of the real Dolby module inside `audiodg`
-  (`docs/reference/etw-dolby-csv.ps1` turns the trace into CSV); outputs in `target/verify-fase4`.
-- `docs/reference/regress-linux.sh [dll] [filter]`: same replay on Linux with the native PE
-  loader (`os-dap-linux`), same acceptance threshold of −130 dB residual per case.
-- `QUANTUM=<n> docs/reference/regress-linux.sh`: the same replay through the real-time adapter
-  in cycles of n frames (`--quantum`); the outputs must stay byte-identical to the baseline
-  (`docs/reference/regress-linux-baseline.sha256`).
-- `docs/reference/verify-pipewire.sh [dll] [filter]`: the phase 4 acceptance test. For every
-  saved capture it starts `os-pipewire` on a private null sink, plays the test signal into the
-  right sink with `pw-play`, records the node's output with `pw-record` and compares it with the
-  Windows loopback (same −130 dB threshold). `LATENCY=<n>` asks the graph for another quantum
-  (on a machine with a higher `clock.min-quantum`, force it with `pw-metadata -n settings 0
-  clock.force-quantum <n>` and set it back to 0 afterwards). The recording goes to memory
-  (`$XDG_RUNTIME_DIR`) first: written straight to disk at 480 frames, `pw-record` dropped whole
-  cycles on long tracks. Run the 194 s tracks on an idle machine: under load `pw-play` can miss a
-  cycle (it shows up as empty cycles of the games sink in the node's `-v` statistics), and with the
-  volume leveler one lost cycle changes the rest of the track. `NODE_ARGS="…"` passes extra
-  options to the node.
-- `docs/reference/verify-sessioni-cambi.sh [sessioni|cambi|tutto]`: on the live node, two
-  sessions separated by a pause (each must match the fresh-module reference) and the three profile
-  changes recorded on Windows (`target/verify-fase4`, from `fase4-windows.ps1`), sent through the
-  control FIFO at the frame found offline with `os-dap-linux --change <frame>:<folder>`; the node's
-  output must also be bit-identical to the offline render with the same changes.
-- `docs/reference/verify-route.sh`: automatic routing with `pw-play` and `paplay` streams, with
-  and without their own target. It switches the default sink to the node for a few seconds and
-  restores it at the end.
-- `docs/reference/trace-shims.gdb`: gdb script that prints which risky Windows API shims the
-  module actually calls during a run, with arguments, return values and the calling RVA (used to
-  triage phase 3-bis); `docs/reference/trace-node.sh` runs it on the live PipeWire node with a
-  fixed scenario (both sinks at once, volume and mute changes, two live profile changes, end of
-  session, second session).
-- `os-pw-latency`: measures, inside the PipeWire graph, the latency the node adds (impulses into a
-  sink, detected on the monitor of the sink the node plays to).
+Accuracy is checked against recordings made on Windows. The scripts are in `docs/reference/`
+and are described in the analysis document:
 
-The recordings in `target/verify` are large and are not part of the repository. The synthetic-signal
-cases (75 captures with their test signals) are published as a release asset:
+- `verify-profile.ps1`, `regress-host.ps1`, `fase4-windows.ps1`, `w1-capture.ps1`: record
+  reference output and profile data on Windows and compare the Windows build against it;
+- `regress-linux.sh`: replays every saved case on Linux through the PE loader (threshold −130
+  dB per case; byte-identical to `regress-linux-baseline.sha256`);
+- `verify-pipewire.sh`, `verify-sessioni-cambi.sh`, `verify-route.sh`: the same cases, sessions,
+  live profile changes and automatic routing on the live PipeWire node, on a private null sink.
+
+The synthetic-signal recordings (75 cases) are published as a pre-release:
 
 ```
 gh release download verify-data-2026-11-03 -p verify-data.tar.gz
 tar -xzf verify-data.tar.gz -C target
 ```
 
-Some `info.txt` files reference their input with an absolute Windows path; the input files are in
-`target/verify/signals/`.
+The real-audio recordings contain copyrighted material and are not published.
 
-The 3 real-audio cases (an excerpt of a Dolby Atmos test track, 5.1, 194 s; Movie Balanced, Game
-performance, Custom 1 without virtualizer) contain non-redistributable material and are not
-published anywhere. They live on the Windows capture machine and travel to Linux by hand as
-`verify-reale.tar.gz` (exported with step W3 of section 12.13; the SHA-256 is written there). It
-is extracted with `tar -xzf verify-reale.tar.gz -C target/verify` into three folders
-`target/verify/reale-real-*`, each with its own copy of the input, and checked with the filter
-`reale-` of `regress-linux.sh` and `verify-pipewire.sh` (steps L1-L3).
-
-## Roadmap
+### Status and roadmap
 
 | Phase | Goal | Status |
 |---|---|---|
-| 0 | Reconstruct the `IDAPModule2` interface and the call sequence of the Windows shell | done |
-| 1 | Windows host that loads the module and renders WAV → binaural stereo, identical to Windows | done |
-| 2 | Shared core `os-dap-core` behind a backend trait | done |
-| 3 | Native PE loader for Linux (sections, relocations, imports, TLS, static CRT, `DllMain`) plus Rust shims for the imported Windows APIs | done |
-| 3-bis | Shim correctness before real time: defects found in review after phase 3 (RTWorkQ, backend IIDs, `WindowsStringHasEmbeddedNull`, condition variables, `VirtualProtect`, named objects, thread exit), off the offline path or working by chance; see section 12.12 of the analysis | done: every fix has its unit test, Linux regression byte-identical to phase 3; on Windows the auxiliary IID is confirmed (`67b16434`, both backends) and the workspace builds; final Linux check done on 2026-11-04 (same `[qi]` line as Windows, 74/74 cases byte-identical to the baseline) |
-| 4 | Real time on Linux: PipeWire node with a virtual 7.1(.4) sink for games and stereo routing for regular applications | done (2026-11-06): `os-pipewire`; all 77 cases (74 synthetic, 3 real-audio tracks) recorded from the node's output through PipeWire match the Windows references (−134.0…−149.0 dB, gain 0.000 dB) and are bit-identical to the offline render at graph quanta of 1024 and 480 frames; volume after the module; the node adds only the module's 512 frames of latency. From an ETW trace of the real module on Windows: a fresh module for every session (verified on the node at −148.9 dB), live profile changes through `HandleNotification` on the same instance (2 of the 3 recorded changes at −148.9 dB over the whole track, the virtualizer switch differs only during its 22 ms crossfade), automatic routing of games and applications by channel count |
-| 5 | Profile model and blob serializer, byte-identical to what Dolby Access writes | done (2026-11-11, section 12.14 of the analysis): codec of the six Dolby context values; profile model generating all 19 captured states and the 17 targeted Windows captures (graphic equalizer 10 → 20 bands, switches, "Default" buttons) byte for byte, and importing captures back; `--profile` in the offline renderer and the node with output identical to the captures in all 77 regression cases; each profile's default for the UI |
-| 6 | User interface with the same controls as Dolby Access, on both platforms | in progress (section 12.15 of the analysis): Slint app over the phase 5 profile model, a control socket for the node, settings saved per profile. Step L1 done (2026-11-11): the UI logic (`os_profiles::Settings`) reaches all 36 captured states through the app's controls with byte-identical blobs, with per-profile memory and "Default" buttons as in Dolby Access. Step L2 done (2026-11-12): a control socket on the node (`--socket`, answered commands, `os-ctl`) and `--settings` to start from the saved active profile; live changes sent over the socket give output bit-identical to the FIFO. Step L3 done (2026-11-12): the Slint window `os-ui` (profiles, IEQ presets, performance mode, switches, 10-band graphic EQ, "Default"), which saves the settings and drives the node. Step L4 done (2026-11-12): systemd user unit, menu entry and `install.sh`; the node restarts from the saved profile. Left: the Windows build (W1) and a hands-on listening test |
+| 0-2 | Reconstruct the module's interface; Windows host with identical output; shared core | done |
+| 3 | Native PE loader for Linux | done |
+| 4 | Real time on Linux: PipeWire node | done |
+| 5 | Profile model, byte-identical to Dolby Access | done |
+| 6 | Settings window, service, installer, prebuilt package, updates | done on Linux |
+| — | Windows build of the settings window; longer listening tests | open |
 
-Acceptance for phases 3-4: the same inputs and blobs give a residual of about −149 dB against the
-Windows recordings in every configuration (−134…−147 dB for application stereo, as on Windows).
+Each phase has its own section in the [analysis document](docs/analisi-dolby-access.md)
+(12.8-12.15).
 
 ## Legal
 
@@ -436,7 +334,7 @@ or Microsoft. Dolby, Dolby Atmos and Dolby Access are trademarks of Dolby Labora
 
 It is meant for personal interoperability use by people who hold a valid Dolby Access license.
 It contains no Dolby binaries; you must supply the module from your own installation and comply
-with its license terms. The profile blobs under `docs/reference/captures` were captured from the
+with its license terms. The profile data under `docs/reference/captures` was captured from the
 author's own installation for testing.
 
 ## License
