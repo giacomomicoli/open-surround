@@ -18,7 +18,7 @@ os-profiles = { path = "../os-profiles" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 minisign-verify = "0.3"
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
