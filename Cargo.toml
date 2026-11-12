@@ -8,6 +8,7 @@ members = [
     "crates/os-pipewire",
     "crates/os-profiles",
     "crates/os-ui",
+    "crates/os-update",
     "crates/os-verify",
 ]
 

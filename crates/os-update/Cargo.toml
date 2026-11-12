@@ -1,0 +1,28 @@
+[package]
+name = "os-update"
+description = "Update check and in-place update of an open-surround install from a signed GitHub release"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# Solo per le prove a mano (doc 12.15, "Aggiornamenti"): OS_UPDATE_API_URL, OS_UPDATE_PUBKEY e
+# OS_UPDATE_SYSTEMCTL sostituiscono URL, chiave pubblica e systemctl. Mai nel pacchetto.
+prova-locale = []
+
+[dependencies]
+os-profiles = { path = "../os-profiles" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+minisign-verify = "0.3"
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+minisign = "0.10"

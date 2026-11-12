@@ -14,9 +14,11 @@ cd "$(dirname "$0")/../.."
 VER="${1:-$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)}"
 NAME="open-surround-$VER-linux-x86_64"
 OUT="target/dist/$NAME"
-TOOLS=(os-pipewire os-ui os-ctl os-blob)
+TOOLS=(os-pipewire os-ui os-ctl os-blob os-update)
+COMMIT="${OS_GIT_COMMIT:-$(git rev-parse HEAD 2> /dev/null || echo sconosciuto)}"
+export OS_GIT_COMMIT="$COMMIT"
 
-cargo build --release --locked -p os-pipewire -p os-ui -p os-profiles
+cargo build --release --locked -p os-pipewire -p os-ui -p os-profiles -p os-update
 
 rm -rf "$OUT" "$OUT.tar.gz"
 mkdir -p "$OUT/bin" "$OUT/share"
@@ -24,7 +26,10 @@ for t in "${TOOLS[@]}"; do install -m 755 -s "target/release/$t" "$OUT/bin/$t"; 
 install -m 755 dist/linux/open-surround dist/linux/install.sh "$OUT/"
 install -m 644 dist/linux/open-surround.service dist/linux/open-surround.desktop "$OUT/share/"
 install -m 644 dist/linux/LEGGIMI.txt LICENSE-MIT LICENSE-APACHE "$OUT/"
+# versione e commit per install.sh (installed.json) e per os-update
+printf '{"version": "%s", "commit": "%s"}\n' "$VER" "$COMMIT" > "$OUT/versione.json"
 
 tar -C target/dist --owner=0 --group=0 -czf "$OUT.tar.gz" "$NAME"
 (cd target/dist && sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+# La firma (.minisig) la aggiunge la CI con la chiave delle release (release.yml).
 echo "$OUT.tar.gz"
