@@ -110,7 +110,7 @@ pub trait Backend: Sized {
 
 - Rust (stable, 2021 edition).
 - `DolbyAudioProcessing.dll` from **your own** Dolby Access installation. It is not included and
-  never will be.
+  never will be: see [Getting the DLL](#getting-the-dll).
 - Profiles: either a state of the built-in profile model (`--profile film:warm`), which
   generates the same values Dolby Access writes, or profile blobs captured on Windows with
   `docs/reference/capture_asar.ps1` or `ref-capture` (`--capture`).
@@ -119,6 +119,46 @@ pub trait Backend: Sized {
   verification script.
 - For verification: ffmpeg (test signals) and a Windows machine with Dolby Access and an
   endpoint with Dolby Atmos for Headphones enabled.
+
+## Getting the DLL
+
+open-surround needs `DolbyAudioProcessing.dll`, Dolby's audio processing module, taken from a
+Windows PC where Dolby Access is installed and Dolby Atmos for Headphones is enabled. It is
+not in this repository or in the releases.
+
+**1. Find it on Windows.** Windows installs it with the Dolby audio components, outside the
+Dolby Access app folder. In PowerShell **as administrator**:
+
+```powershell
+Get-ChildItem C:\Windows\System32, 'C:\Program Files\WindowsApps' -Recurse `
+    -Filter DolbyAudioProcessing.dll -ErrorAction SilentlyContinue |
+    Select-Object FullName, Length, @{n='Version'; e={$_.VersionInfo.FileVersion}}
+```
+
+If there is more than one copy, take the most recent version.
+
+**2. Copy it to the Linux machine** (USB stick, network share, `scp`). Check it with
+`sha256sum DolbyAudioProcessing.dll`. Everything in this repository was verified with DAP
+7.3.7 (`7.3.7.rel`):
+
+```
+0fada40251880d03c657a357745d362799c93fb6024f733f1c8bf1057f5e4715
+```
+
+Other versions may work, but they were not verified.
+
+**3. Put it where open-surround looks for it:**
+
+| How you run it | Where the DLL goes |
+|---|---|
+| Prebuilt package, `./open-surround` | the extracted package folder, next to the `open-surround` script (or pass `--dll <file>`) |
+| Prebuilt package, `./install.sh` | the extracted package folder, or pass its path: `./install.sh /path/to/DolbyAudioProcessing.dll` |
+| From the repository, `dist/linux/install.sh` | anywhere: pass its path, `dist/linux/install.sh /path/to/DolbyAudioProcessing.dll` |
+| `os-pipewire` or `os-dap-linux` by hand | anywhere: `--dll /path/to/DolbyAudioProcessing.dll` |
+
+Both installers copy it to `~/.local/share/open-surround/DolbyAudioProcessing.dll`, where the
+service reads it. After installing, the original can be moved or deleted. To replace it later,
+copy the new file over that path, then run `systemctl --user restart open-surround`.
 
 ## Building and usage
 
@@ -191,8 +231,20 @@ sound, and restarting the node keeps the profile. `os-ctl stato` prints what the
 
 Each `v*` tag gets `open-surround-<version>-linux-x86_64.tar.gz` on its GitHub release,
 built by `.github/workflows/release.yml` with `dist/linux/package.sh`. It does not contain
-Dolby's module: extract it, copy your `DolbyAudioProcessing.dll` into the extracted folder, then
-either
+Dolby's module: download it from the
+[releases page](https://github.com/giacomomicoli/open-surround/releases) and extract it
+(`tar -xzf open-surround-<version>-linux-x86_64.tar.gz`). Then copy your
+`DolbyAudioProcessing.dll` ([Getting the DLL](#getting-the-dll)) into the extracted folder:
+
+```
+open-surround-<version>-linux-x86_64/
+├─ DolbyAudioProcessing.dll   ← your copy goes here
+├─ open-surround
+├─ install.sh
+├─ bin/  share/  LEGGIMI.txt  …
+```
+
+and either
 
 ```
 ./open-surround        # run without installing: node + window, closing the window stops the node
