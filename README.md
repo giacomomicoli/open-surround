@@ -166,6 +166,8 @@ settings file.
 
 ### Updating
 
+What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
+
 When the window starts (at most once a day) or when you press **Cerca aggiornamenti**, it asks
 GitHub whether there is a newer release. That is a single anonymous request to the GitHub
 releases API; nothing about you or your system is sent. You can turn the automatic check off
