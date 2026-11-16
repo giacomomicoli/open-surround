@@ -11,16 +11,25 @@
 //!
 //! Gli stessi comandi del FIFO (`--control`), che resta per gli script di verifica.
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{bail, Context as _, Result};
+#[cfg(unix)]
+use anyhow::Context as _;
+use anyhow::{bail, Result};
 
 /// Socket di default: `$XDG_RUNTIME_DIR/open-surround/control.sock`.
+#[cfg(unix)]
 pub fn default_socket_path() -> Result<PathBuf> {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()).context("XDG_RUNTIME_DIR non impostata")?;
     Ok(PathBuf::from(dir).join("open-surround").join("control.sock"))
+}
+
+/// Fuori da Unix il nodo non c'è (`send` fallisce sempre): un percorso qualsiasi, solo da
+/// mostrare, così la finestra parte senza `XDG_RUNTIME_DIR` (fase 6, W1 su Windows).
+#[cfg(not(unix))]
+pub fn default_socket_path() -> Result<PathBuf> {
+    Ok(std::env::temp_dir().join("open-surround").join("control.sock"))
 }
 
 /// Tempo massimo per la risposta del nodo.
@@ -59,6 +68,7 @@ impl Reply {
 /// solito, che il nodo non è in esecuzione.
 #[cfg(unix)]
 pub fn send(socket: &Path, command: &str) -> Result<Reply> {
+    use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
     if command.contains('\n') {
         bail!("comando su più righe");
@@ -115,6 +125,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn andata_e_ritorno_su_socket() {
+        use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
         let path = std::env::temp_dir().join(format!("os-ctl-test-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
