@@ -216,6 +216,11 @@ again after a `git pull` to update (without an argument it keeps the installed D
 `dist/linux/package.sh` builds the prebuilt package locally; it then needs the glibc of the
 machine it was built on, while the published packages are built on Debian 13.
 
+The workspace also builds on Windows (`cargo build --workspace`, MSVC). There it gives the
+settings window, which reads and writes `%APPDATA%\open-surround\settings.json`, the offline
+renderer `os-dap-host` and the reference tools. The PipeWire node and the installer are
+Linux-only.
+
 ### Command-line tools
 
 The service is just `os-pipewire` with a few options, and the same engine is available as an
@@ -309,8 +314,10 @@ real-audio ones also contain copyrighted material. The scripts expect them in `t
 | 3 | Native PE loader for Linux | done |
 | 4 | Real time on Linux: PipeWire node | done |
 | 5 | Profile model, byte-identical to Dolby Access | done |
-| 6 | Settings window, service, installer, prebuilt package, updates | done on Linux |
-| — | Windows build of the settings window; longer listening tests | open |
+| 6 | Settings window, service, installer, prebuilt package, updates; Windows build of the window | done |
+
+All planned phases are done. Small open points (equalizer presets in the Voice profile, a
+global on/off switch) will be picked up only if needed.
 
 ## Security
 
