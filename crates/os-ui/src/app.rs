@@ -84,7 +84,8 @@ impl App {
 }
 
 
-#[cfg(test)]
+// Il nodo finto usa un socket Unix: su Windows il nodo non c'è e i test non si compilano.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
