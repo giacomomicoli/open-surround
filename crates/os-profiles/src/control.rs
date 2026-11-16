@@ -125,6 +125,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn andata_e_ritorno_su_socket() {
+        use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
         let path = std::env::temp_dir().join(format!("os-ctl-test-{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
