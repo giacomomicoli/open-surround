@@ -81,6 +81,7 @@ impl Args {
 fn refresh(ui: &AppWindow, app: &App, rebuild: bool) {
     let s = &app.settings;
     ui.set_active(view::kind_index(s.active_kind()));
+    ui.set_dolby(s.dolby());
     ui.set_performance(s.performance());
     if let Some(ieq) = s.ieq() {
         ui.set_ieq(view::ieq_index(ieq));
@@ -158,6 +159,16 @@ fn build(app: &Rc<RefCell<App>>) -> Result<AppWindow> {
         }
     });
     let f = act.clone();
+    ui.on_set_dolby(move |on| {
+        f(
+            &|s| {
+                s.set_dolby(on);
+                Ok(())
+            },
+            false,
+        )
+    });
+    let f = act.clone();
     ui.on_set_performance(move |on| f(&|s| s.set_performance(on), false));
     let f = act.clone();
     ui.on_set_ieq(move |i| {
@@ -202,6 +213,7 @@ fn main() -> Result<()> {
         path: args.settings.clone(),
         socket: args.socket.clone(),
         sent: None,
+        sent_dolby: None,
         connected: false,
         throttle: Throttle::new(GEQ_INTERVAL),
         flush_pending: false,
@@ -480,6 +492,7 @@ mod clic {
             path: dir.join("settings.json"),
             socket: dir.join("nessun-nodo.sock"),
             sent: None,
+            sent_dolby: None,
             connected: false,
             throttle: Throttle::new(GEQ_INTERVAL),
             flush_pending: false,
@@ -531,6 +544,17 @@ mod clic {
         ui.invoke_reset();
         assert!(checked(&ui, "Virtualizzatore surround"));
         assert_eq!(one(&ui, "32 Hz").accessible_value().unwrap().parse::<f32>().unwrap(), 0.0);
+
+        // Interruttore generale: spento e riacceso, i profili non cambiano.
+        assert!(checked(&ui, "Elaborazione Dolby"));
+        click(&ui, "Elaborazione Dolby");
+        assert!(!checked(&ui, "Elaborazione Dolby") && !app.borrow().settings.dolby());
+        assert!(!Settings::load(&dir.join("settings.json")).unwrap().dolby());
+        select(Kind::Film);
+        assert!(!checked(&ui, "Elaborazione Dolby"), "l'interruttore non dipende dal profilo");
+        assert_eq!(selected_presets(&ui), ["Dettagliato"]);
+        click(&ui, "Elaborazione Dolby");
+        assert!(app.borrow().settings.dolby());
 
         // Tutto è finito nel file, che il nodo legge al riavvio.
         assert_eq!(Settings::load(&dir.join("settings.json")).unwrap(), app.borrow().settings);

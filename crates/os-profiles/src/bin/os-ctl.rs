@@ -5,6 +5,7 @@
 //!   os-ctl [--socket <path>] <comando…>
 //!     stato                                profilo attivo, stato del modulo, versione del nodo
 //!     profilo <cartella|stato> [frame <n>]  cambio di profilo a caldo
+//!     dolby <on|off>                       interruttore generale (off: downmix stereo, doc 12.16)
 //!     versione                             versione e commit di os-ctl e, se risponde, del nodo
 //!   --socket   default $XDG_RUNTIME_DIR/open-surround/control.sock
 
@@ -12,7 +13,7 @@ use anyhow::{bail, Result};
 use os_profiles::control::{default_socket_path, field, send, Reply};
 use os_profiles::version;
 
-const USAGE: &str = "uso: os-ctl [--socket <path>] stato | profilo <cartella|stato> [frame <n>] | versione";
+const USAGE: &str = "uso: os-ctl [--socket <path>] stato | profilo <cartella|stato> [frame <n>] | dolby <on|off> | versione";
 
 fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();

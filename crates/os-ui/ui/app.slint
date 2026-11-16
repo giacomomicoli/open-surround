@@ -80,6 +80,8 @@ export component AppWindow inherits Window {
     // proprio `checked`, e con un legame in una sola direzione smetterebbe di seguire il
     // profilo (Person. 1 → Person. 2 mostrava ancora i valori di Person. 1).
     in-out property <bool> performance;
+    // Interruttore generale (doc 12.16): spento, il nodo non usa il modulo (stereo semplice).
+    in-out property <bool> dolby: true;
     // preset IEQ nell'ordine dell'app: 0 Dettagliato, 1 Equilibrato, 2 Caldo, 3 Non attivo
     in property <int> ieq;
     in-out property <bool> virtualizer;
@@ -115,6 +117,7 @@ export component AppWindow inherits Window {
     callback set-auto-check(bool);
 
     callback select(int);
+    callback set-dolby(bool);
     callback set-performance(bool);
     callback set-ieq(int);
     callback set-virtualizer(bool);
@@ -133,6 +136,12 @@ export component AppWindow inherits Window {
             VerticalLayout {
                 padding: 12px;
                 spacing: 4px;
+                Switch {
+                    text: "Elaborazione Dolby";
+                    checked <=> root.dolby;
+                    toggled => { root.set-dolby(root.dolby); }
+                }
+                Rectangle { height: 8px; }
                 Text {
                     text: "Profili";
                     font-size: 12px;

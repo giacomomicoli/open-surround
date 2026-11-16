@@ -34,6 +34,8 @@
 //!                        profilo <cartella|stato> [frame <n>]  cambio di profilo a caldo con i
 //!                        blob della cartella o dello stato del modello, sulla stessa istanza
 //!                        del modulo, come Dolby Access
+//!                        dolby <on|off>                interruttore generale: con off il modulo
+//!                                                      è fermo e l'uscita è il downmix stereo
 //!                        stato                         profilo attivo e stato del modulo
 //!     --socket <path>    gli stessi comandi su un socket Unix, con una riga di risposta
 //!                        (`ok …` o `errore …`) per ogni connessione: è il canale
@@ -41,7 +43,11 @@
 //!                        $XDG_RUNTIME_DIR/open-surround/control.sock
 //!     --settings <file>  parte dal profilo attivo del file delle impostazioni
 //!                        dell'interfaccia (al posto di --profile/--capture; se il file manca,
-//!                        i default: film:off). Di solito ~/.config/open-surround/settings.json
+//!                        i default: film:off), con l'interruttore generale salvato.
+//!                        Di solito ~/.config/open-surround/settings.json
+//!     --bypass           parte con l'elaborazione Dolby spenta: downmix stereo dei sink, senza
+//!                        modulo (L = FL + 0,707·(FC + SL + BL + alti sinistri), R simmetrico,
+//!                        LFE escluso); si riaccende con `dolby on`
 //!     --idle-ms <n>      riconfigura il modulo anche dopo n ms senza audio con i flussi ancora
 //!                        collegati (default 0 = mai). La fine della sessione, come su Windows,
 //!                        è la chiusura dell'ultimo flusso collegato ai sink: lì il modulo viene
@@ -72,6 +78,7 @@ pub struct Args {
     pub control: Option<std::path::PathBuf>,
     pub socket: Option<std::path::PathBuf>,
     pub route: bool,
+    pub bypass: bool,
 }
 
 fn usage() -> String {
@@ -100,6 +107,7 @@ impl Args {
             control: None,
             socket: None,
             route: true,
+            bypass: false,
         };
         let mut settings: Option<std::path::PathBuf> = None;
         let mut it = args.into_iter();
@@ -126,6 +134,7 @@ impl Args {
                 "--socket" => a.socket = Some(val()?.into()),
                 "--settings" => settings = Some(val()?.into()),
                 "--no-route" => a.route = false,
+                "--bypass" => a.bypass = true,
                 "-h" | "--help" => {
                     eprintln!("{}", usage());
                     std::process::exit(0);
@@ -138,9 +147,11 @@ impl Args {
             if !b.captures.is_empty() || b.profile.is_some() {
                 bail!("--settings è alternativo a --profile e --capture");
             }
-            let active = os_profiles::Settings::load(&path)?.active();
-            eprintln!("impostazioni {}: profilo attivo {active}", path.display());
+            let settings = os_profiles::Settings::load(&path)?;
+            let active = settings.active();
+            eprintln!("impostazioni {}: profilo attivo {active}{}", path.display(), if settings.dolby() { "" } else { ", elaborazione Dolby spenta" });
             a.module.blobs.profile = Some(active.to_string());
+            a.bypass |= !settings.dolby();
         }
         let b = &a.module.blobs;
         if b.captures.is_empty() && b.profile.is_none() && (b.init.is_none() || b.runtime.is_none()) {

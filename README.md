@@ -22,7 +22,7 @@ test, the output matches what Windows produces to within floating-point rounding
 >   also possible.
 > - The settings window and the command-line messages are in Italian for now. The labels map
 >   one to one to Dolby Access (Film = Movie, Musica = Music, Voce = Voice, Personalizzato =
->   Custom, Predefinito = Default).
+>   Custom, Predefinito = Default, Elaborazione Dolby = Dolby processing).
 > - This is a personal project, tested on one machine. It works well there, but expect rough
 >   edges.
 
@@ -153,6 +153,11 @@ settings file.
 
 - Profile changes from the window take effect immediately, while audio is playing. They are
   saved to `~/.config/open-surround/settings.json`.
+- **Elaborazione Dolby** at the top of the window is the global on/off switch. Off, the outputs
+  stay where they are but Dolby's module is not used: stereo apps play unchanged and 5.1/7.1
+  games are folded down to plain stereo (centre, side, rear and height channels at −3 dB on
+  their side, LFE dropped). The switch is saved too; your profile settings are kept for when you
+  turn it back on.
 - Games and players with 5.1/7.1 output are moved to the 7.1 output by themselves when your
   default output is one of the two. A stream you sent to a specific device yourself is left
   alone.
@@ -242,7 +247,7 @@ Profiles are written as `gaming|film|music:<off|balanced|warm|detailed>`, `voice
 |---|---|
 | `os-pipewire` | the PipeWire node; `--socket` for the control socket, `--target <node>` for the output device, `--no-route` to turn off automatic routing, `--channels 12` for a 7.1.4 games output |
 | `os-ui` | the settings window |
-| `os-ctl` | sends one command to the running node (`stato`, `versione`, `profilo <profile>`) |
+| `os-ctl` | sends one command to the running node (`stato`, `versione`, `profilo <profile>`, `dolby on\|off`) |
 | `os-update` | checks for and installs updates |
 | `os-dap-linux` | offline renderer on Linux |
 | `os-dap-host` | the same offline renderer on Windows, with Windows' own loader (used to compare the two) |
@@ -300,8 +305,9 @@ Accuracy is checked against recordings made on Windows. The scripts are in `docs
   reference output and profile data on Windows and compare the Windows build against it;
 - `regress-linux.sh`: replays every saved case on Linux through the PE loader (threshold −130
   dB per case; byte-identical to `regress-linux-baseline.sha256`);
-- `verify-pipewire.sh`, `verify-sessioni-cambi.sh`, `verify-route.sh`: the same cases, sessions,
-  live profile changes and automatic routing on the live PipeWire node, on a private null sink.
+- `verify-pipewire.sh`, `verify-sessioni-cambi.sh`, `verify-route.sh`, `verify-bypass.sh`: the
+  same cases, sessions, live profile changes, automatic routing and the on/off switch on the live
+  PipeWire node, on a private null sink.
 
 The reference recordings are not published: they are the output of Dolby's module, and the
 real-audio ones also contain copyrighted material. The scripts expect them in `target/verify`.
@@ -316,8 +322,9 @@ real-audio ones also contain copyrighted material. The scripts expect them in `t
 | 5 | Profile model, byte-identical to Dolby Access | done |
 | 6 | Settings window, service, installer, prebuilt package, updates; Windows build of the window | done |
 
-All planned phases are done. Small open points (equalizer presets in the Voice profile, a
-global on/off switch) will be picked up only if needed.
+All planned phases are done. After them: a global on/off switch (Dolby processing off = plain
+stereo). Small open points (equalizer presets in the Voice profile) will be picked up only if
+needed.
 
 ## Security
 
