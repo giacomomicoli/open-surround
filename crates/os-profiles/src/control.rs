@@ -5,8 +5,9 @@
 //!
 //! ```text
 //! profilo <cartella|stato> [frame <n>]   →  ok profilo <stato>
-//! stato                                  →  ok profilo=<stato> modulo=<fermo|in-moto> cambi=<n> …
-//!                                           … versione=<x.y.z> commit=<12 caratteri>
+//! dolby <on|off>                         →  ok dolby <on|off>   (interruttore generale, doc 12.16)
+//! stato                                  →  ok profilo=<stato> dolby=<on|off> modulo=<fermo|in-moto> …
+//!                                           … cambi=<n> versione=<x.y.z> commit=<12 caratteri>
 //! ```
 //!
 //! Gli stessi comandi del FIFO (`--control`), che resta per gli script di verifica.
@@ -95,6 +96,29 @@ pub fn field<'a>(reply: &'a str, key: &str) -> Option<&'a str> {
     reply.split(' ').find_map(|w| w.strip_prefix(key)?.strip_prefix('='))
 }
 
+/// Il comando dell'interruttore generale.
+pub fn dolby_command(on: bool) -> String {
+    format!("dolby {}", on_off(on))
+}
+
+/// `on`/`off`, come nel comando `dolby` e nel campo `dolby=` di `stato`.
+pub fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+/// Legge `on`/`off`.
+pub fn parse_on_off(s: &str) -> Result<bool> {
+    match s {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => bail!("atteso on oppure off, non {s:?}"),
+    }
+}
+
 /// Il comando che rende attivo uno stato del modello.
 pub fn profile_command(profile: &crate::Profile) -> String {
     format!("profilo {profile}")
@@ -111,6 +135,15 @@ mod tests {
         assert_eq!(Reply::parse("errore profilo x: sconosciuto").unwrap(), Reply::Error("profilo x: sconosciuto".into()));
         assert!(Reply::parse("boh").is_err());
         assert!(Reply::Error("x".into()).into_result().is_err());
+    }
+
+    #[test]
+    fn interruttore() {
+        assert_eq!(dolby_command(false), "dolby off");
+        assert_eq!(dolby_command(true), "dolby on");
+        assert!(parse_on_off("on").unwrap());
+        assert!(!parse_on_off("off").unwrap());
+        assert!(parse_on_off("spento").is_err());
     }
 
     #[test]

@@ -26,12 +26,16 @@
 //! sorgenti (la coda del modulo è finita) lo riconfigura ([`Engine::reconfigure`], equivalente
 //! a un'istanza nuova, verificato byte per byte) e torna fermo.
 //!
+//! Interruttore generale (doc 12.16): con [`Streamer::set_bypass`] il modulo viene fermato come a
+//! fine sessione e l'uscita è il downmix stereo degli ingressi ([`DOWNMIX`]), con la stessa
+//! latenza dell'adattatore e lo stesso volume dopo.
+//!
 //! Nessuna allocazione dopo [`Streamer::new`]: `process` è chiamabile dal thread real time.
 
 use anyhow::Result;
 
 use crate::engine::{Backend, Engine};
-use crate::layout::{Routing, NUM_STATIC, OUT_CHANNELS};
+use crate::layout::{Routing, NUM_BEDS, NUM_STATIC, OUT_CHANNELS};
 use crate::props::{PropKey, Value};
 
 /// Cambio di profilo a caldo (doc sez. 12.13, L5): valori nuovi del property store FX e chiavi
@@ -44,6 +48,42 @@ pub struct Change {
     /// prossimo blocco. Serve alla verifica, per riprodurre un cambio registrato su Windows.
     pub at: Option<u64>,
 }
+
+/// Coefficienti (sinistro, destro) del downmix stereo del bypass per ogni ingresso statico, nell'ordine
+/// dei bed (FL FR FC LFE SL SR BL BR TFL TFR TBL TBR BFL BFR BBL BBR BC) e poi i due oggetti
+/// bypass delle applicazioni: frontali e stereo invariati, centro, laterali, posteriori e alti a
+/// −3 dB sul loro lato, LFE escluso (downmix ITU-R BS.775 esteso ai canali alti).
+pub const DOWNMIX: [(f32, f32); NUM_STATIC] = {
+    const H: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    let beds: [(f32, f32); NUM_BEDS] = [
+        (1.0, 0.0), // FL
+        (0.0, 1.0), // FR
+        (H, H),     // FC
+        (0.0, 0.0), // LFE
+        (H, 0.0),   // SL
+        (0.0, H),   // SR
+        (H, 0.0),   // BL
+        (0.0, H),   // BR
+        (H, 0.0),   // TFL
+        (0.0, H),   // TFR
+        (H, 0.0),   // TBL
+        (0.0, H),   // TBR
+        (H, 0.0),   // BFL
+        (0.0, H),   // BFR
+        (H, 0.0),   // BBL
+        (0.0, H),   // BBR
+        (H, H),     // BC
+    ];
+    let mut all = [(0.0, 0.0); NUM_STATIC];
+    let mut i = 0;
+    while i < NUM_BEDS {
+        all[i] = beds[i];
+        i += 1;
+    }
+    all[NUM_BEDS] = (1.0, 0.0);
+    all[NUM_BEDS + 1] = (0.0, 1.0);
+    all
+};
 
 /// Cambi in attesa al massimo: la coda è allocata in [`Streamer::new`].
 const MAX_PENDING: usize = 8;
@@ -82,6 +122,8 @@ pub struct Streamer<B: Backend> {
     changes: u64,
     /// Frame della sessione al primo frame del blocco in costruzione.
     block_start: u64,
+    /// Interruttore generale spento: downmix al posto del modulo.
+    bypass: bool,
 }
 
 impl<B: Backend> Streamer<B> {
@@ -109,6 +151,7 @@ impl<B: Backend> Streamer<B> {
             pending: Vec::with_capacity(MAX_PENDING),
             changes: 0,
             block_start: 0,
+            bypass: false,
         }
     }
 
@@ -116,6 +159,26 @@ impl<B: Backend> Streamer<B> {
     /// prossima sorgente (None: mai, il modulo resta in moto; è il comportamento dell'offline).
     pub fn set_idle_reset(&mut self, frames: Option<usize>) {
         self.idle_after = frames;
+    }
+
+    /// Interruttore generale (doc 12.16): con `true` il modulo viene riconfigurato e fermato come
+    /// a fine sessione ([`Streamer::end_session`]) e, finché resta così, l'uscita è il downmix
+    /// stereo degli ingressi ([`DOWNMIX`]) senza chiamare il modulo. Con `false` il modulo
+    /// riparte da fermo alla prima sorgente, come in una sessione nuova. La latenza
+    /// dell'adattatore non cambia; manca il ritardo del modulo, quindi al passaggio l'audio
+    /// salta di [`crate::layout::MODULE_DELAY_FRAMES`] frame. I cambi di profilo nel frattempo
+    /// arrivano subito al modulo fermo e valgono alla riaccensione.
+    pub fn set_bypass(&mut self, on: bool) -> Result<()> {
+        if on && !self.bypass {
+            self.end_session()?;
+        }
+        self.bypass = on;
+        Ok(())
+    }
+
+    /// L'interruttore generale è spento (downmix al posto del modulo).
+    pub fn bypass(&self) -> bool {
+        self.bypass
     }
 
     /// Il modulo è fermo (in attesa di una sorgente).
@@ -260,6 +323,10 @@ impl<B: Backend> Streamer<B> {
     }
 
     fn push(&mut self, start: usize, frames: usize, sources: &[Source]) -> Result<()> {
+        if self.bypass {
+            self.push_downmix(start, frames, sources);
+            return Ok(());
+        }
         let block = self.engine.block_frames();
         if self.idle {
             if sources.is_empty() {
@@ -332,6 +399,31 @@ impl<B: Backend> Streamer<B> {
             }
         }
         Ok(())
+    }
+
+    /// Bypass: accoda il downmix stereo di `frames` frame degli ingressi (guadagno della
+    /// sorgente, poi coefficiente di [`DOWNMIX`]); senza sorgenti, zeri.
+    fn push_downmix(&mut self, start: usize, frames: usize, sources: &[Source]) {
+        self.enqueue_zeros(frames);
+        let cap = self.ring.len() / OUT_CHANNELS;
+        let tail = (self.head + self.queued - frames) % cap;
+        for src in sources {
+            let gain = src.routing.gain;
+            for (&b, ch) in src.routing.map.iter().zip(src.channels) {
+                let (cl, cr) = DOWNMIX[b];
+                if cl == 0.0 && cr == 0.0 {
+                    continue;
+                }
+                let from = start.min(ch.len());
+                let to = (start + frames).min(ch.len());
+                for (i, &x) in ch[from..to].iter().enumerate() {
+                    let s = x * gain;
+                    let t = (tail + i) % cap * OUT_CHANNELS;
+                    self.ring[t] += s * cl;
+                    self.ring[t + 1] += s * cr;
+                }
+            }
+        }
     }
 
     /// Fa posto per `frames` frame nel ring: se l'ingresso è stato a lungo più lungo
@@ -714,5 +806,91 @@ mod tests {
         s.end_session().unwrap();
         s.end_session().unwrap();
         assert_eq!(s.resets(), 2);
+    }
+
+    #[test]
+    fn bypass_downmix_senza_modulo_con_la_stessa_latenza() {
+        // Cicli di 384 frame (latenza 128 con blocchi di 256), giochi 7.1 e app stereo insieme.
+        // Spento l'interruttore a metà blocco, il modulo viene riconfigurato e non è più
+        // chiamato; l'uscita è il downmix × volume, ritardato della stessa latenza.
+        let rg = Routing::new(8, false, None).unwrap();
+        let ra = Routing::new(2, true, None).unwrap();
+        let q = 384;
+        let cycles = 8;
+        let games = signal(q * cycles, 8, 5);
+        let apps = signal(q * cycles, 2, 6);
+        let volume = 0.5;
+        let mut s = Streamer::new(engine(256), 1024);
+        let mut got: Vec<[f32; 2]> = Vec::new();
+        for k in 0..cycles {
+            if k == 2 {
+                s.set_bypass(true).unwrap();
+                assert!(s.bypass() && s.is_idle());
+                assert_eq!(s.resets(), 1);
+            }
+            let g: Vec<&[f32]> = games.iter().map(|c| &c[k * q..(k + 1) * q]).collect();
+            let a: Vec<&[f32]> = apps.iter().map(|c| &c[k * q..(k + 1) * q]).collect();
+            let (mut l, mut r) = (vec![0.0; q], vec![0.0; q]);
+            s.process(q, &[Source { routing: &rg, channels: &g }, Source { routing: &ra, channels: &a }], volume, [&mut l, &mut r]).unwrap();
+            got.extend(l.iter().zip(&r).map(|(&l, &r)| [l, r]));
+        }
+        assert_eq!(s.latency(), 128);
+        assert!(s.is_idle(), "il modulo non riparte durante il bypass");
+        assert_eq!(s.engine_mut().backend().blocks, 0, "nessuna chiamata dopo la riconfigurazione");
+        // Il downmix di ogni frame d'ingresso dal ciclo 2 esce 128 frame dopo.
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let gg = rg.gain;
+        for n in 2 * q..cycles * q - 128 {
+            let c = |i: usize| games[i][n] * gg;
+            // Ordine del sink: FL FR FC LFE BL BR SL SR.
+            let mut el = c(0) * 1.0;
+            el += c(2) * h;
+            el += c(4) * h;
+            el += c(6) * h;
+            el += apps[0][n] * ra.gain;
+            let mut er = c(1) * 1.0;
+            er += c(2) * h;
+            er += c(5) * h;
+            er += c(7) * h;
+            er += apps[1][n] * ra.gain;
+            let o = got[n + 128];
+            assert!((o[0] - el * volume).abs() < 1e-6 && (o[1] - er * volume).abs() < 1e-6, "frame {n}: {o:?} contro {:?}", [el * volume, er * volume]);
+        }
+    }
+
+    #[test]
+    fn bypass_spento_il_modulo_riparte_come_una_sessione_nuova() {
+        // Dopo il bypass il modulo riparte da un blocco nuovo e dà la stessa uscita della prima
+        // sessione; un cambio di profilo durante il bypass arriva subito al modulo fermo.
+        let rg = Routing::new(2, false, None).unwrap();
+        let mut s = Streamer::new(engine(256), 1024);
+        let ones = vec![1.0f32; 384];
+        let chans: Vec<&[f32]> = vec![&ones, &ones];
+        let src = [Source { routing: &rg, channels: &chans }];
+        let cycle = |s: &mut Streamer<Mock>| {
+            let (mut l, mut r) = (vec![0.0; 384], vec![0.0; 384]);
+            s.process(384, &src, 1.0, [&mut l, &mut r]).unwrap();
+            (l, r)
+        };
+        let first = cycle(&mut s);
+        s.set_bypass(true).unwrap();
+        s.set_bypass(true).unwrap();
+        assert_eq!(s.resets(), 1, "riaccendere il bypass non riconfigura di nuovo");
+        assert!(s.change_properties(change(None, 2)).unwrap().is_some());
+        // Prima escono gli zeri del blocco scartato (128 frame), poi il downmix: FL e FR a −3 dB
+        // (guadagno dei giochi) sul loro lato.
+        let (l, r) = cycle(&mut s);
+        assert!(l[..128].iter().chain(&r[..128]).all(|&v| v == 0.0));
+        assert!(l[128..].iter().all(|&v| v == rg.gain) && r[128..].iter().all(|&v| v == rg.gain));
+        s.set_bypass(false).unwrap();
+        assert!(!s.bypass());
+        // Il ring contiene ancora 128 frame di downmix; poi il modulo dal primo blocco.
+        let (l, _) = cycle(&mut s);
+        assert!(l[..128].iter().all(|&v| v == rg.gain));
+        assert_eq!(s.latency(), 128);
+        assert_eq!(s.engine_mut().backend().changes, vec![(0, 2)]);
+        // Dopo i 128 frame di downmix esce il primo blocco del modulo riconfigurato, uguale a
+        // quello della prima sessione (che lo ha dopo i 128 zeri della latenza).
+        assert_eq!(l[128..], first.0[128..], "il modulo riparte dal primo blocco");
     }
 }

@@ -111,13 +111,15 @@ pub struct Settings {
     /// Modalità performance spenta.
     profiles: [Profile; 7],
     performance: bool,
+    /// Interruttore generale (doc 12.16): con `false` il nodo non usa il modulo (downmix stereo).
+    dolby: bool,
 }
 
 impl Default for Settings {
     /// Tutti i profili al loro "Predefinito"; attivo Film. Lo stato di una prima installazione
     /// di Dolby Access non è stato catturato: è una scelta, non una misura.
     fn default() -> Self {
-        Settings { active: Kind::Film, profiles: Kind::ALL.map(Kind::factory), performance: true }
+        Settings { active: Kind::Film, profiles: Kind::ALL.map(Kind::factory), performance: true, dolby: true }
     }
 }
 
@@ -138,6 +140,17 @@ impl Settings {
             Profile::Gaming { .. } if self.performance => Profile::Gaming { ieq: Ieq::Off },
             p => p,
         }
+    }
+
+    /// Interruttore generale: elaborazione Dolby accesa (doc 12.16).
+    pub fn dolby(&self) -> bool {
+        self.dolby
+    }
+
+    /// Accende o spegne l'elaborazione Dolby. Le altre impostazioni non cambiano e valgono alla
+    /// riaccensione.
+    pub fn set_dolby(&mut self, on: bool) {
+        self.dolby = on;
     }
 
     /// Modalità performance di Gaming.
@@ -266,6 +279,7 @@ impl Settings {
             version: VERSION,
             active: self.active.name().into(),
             gaming_performance: self.performance,
+            dolby: self.dolby,
             profiles: self.profiles.iter().map(Profile::to_string).collect(),
         };
         serde_json::to_string_pretty(&file).unwrap() + "\n"
@@ -276,7 +290,7 @@ impl Settings {
         if file.version != VERSION {
             bail!("versione {} delle impostazioni, attesa {VERSION}", file.version);
         }
-        let mut s = Settings { active: file.active.parse()?, performance: file.gaming_performance, ..Settings::default() };
+        let mut s = Settings { active: file.active.parse()?, performance: file.gaming_performance, dolby: file.dolby, ..Settings::default() };
         let mut seen = [false; 7];
         for text in &file.profiles {
             let p: Profile = text.parse()?;
@@ -292,14 +306,27 @@ impl Settings {
 
 const VERSION: u32 = 1;
 
-/// Il file su disco. I profili mancanti prendono il "Predefinito".
+/// Il file su disco. I profili mancanti prendono il "Predefinito"; senza `dolby` l'elaborazione è
+/// accesa. `dolby` si scrive solo quando è spenta: le versioni fino alla 0.2.0 rifiutano i campi
+/// che non conoscono, e così un file con l'elaborazione accesa resta leggibile anche da loro
+/// (per esempio dopo il ripristino della versione precedente da parte di os-update).
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
     version: u32,
     active: String,
     gaming_performance: bool,
+    #[serde(default = "acceso", skip_serializing_if = "is_acceso")]
+    dolby: bool,
     profiles: Vec<String>,
+}
+
+fn acceso() -> bool {
+    true
+}
+
+fn is_acceso(on: &bool) -> bool {
+    *on
 }
 
 /// Percorso del file delle impostazioni: `$XDG_CONFIG_HOME/open-surround/settings.json`
@@ -335,13 +362,17 @@ mod tests {
         s.set_ieq(Ieq::Warm).unwrap();
         s.select(Kind::Custom2);
         s.set_geq(3, -50).unwrap();
+        s.set_dolby(false);
         let text = s.to_json();
         assert_eq!(Settings::from_json(&text).unwrap(), s);
+        assert!(!Settings::from_json(&text).unwrap().dolby());
         // Profili mancanti → default; profili ripetuti, campi sconosciuti, versione → errore.
         let min = r#"{"version":1,"active":"music","gaming_performance":true,"profiles":["music:warm"]}"#;
         let m = Settings::from_json(min).unwrap();
         assert_eq!(m.active(), Profile::Music { ieq: Ieq::Warm });
         assert_eq!(m.state(Kind::Film), Profile::Film { ieq: Ieq::Off });
+        assert!(m.dolby(), "senza il campo l'elaborazione è accesa");
+        assert!(!Settings::default().to_json().contains("dolby"), "acceso: file come quelli della 0.2.0");
         for bad in [
             r#"{"version":1,"active":"music","gaming_performance":true,"profiles":["music:warm","music:off"]}"#,
             r#"{"version":1,"active":"music","gaming_performance":true,"profiles":[],"x":1}"#,

@@ -16,6 +16,8 @@ pub struct App {
     pub socket: PathBuf,
     /// Ultimo stato accettato dal nodo (None: nodo mai raggiunto, o perso).
     pub sent: Option<Profile>,
+    /// Ultimo stato dell'interruttore generale accettato dal nodo (doc 12.16).
+    pub sent_dolby: Option<bool>,
     /// Il nodo rispondeva all'ultima interrogazione.
     pub connected: bool,
     pub throttle: Throttle,
@@ -31,11 +33,30 @@ impl App {
         if let Err(e) = self.settings.save(&self.path) {
             self.error = format!("Impostazioni non salvate: {e:#}");
         }
-        let active = self.settings.active();
-        if self.sent == Some(active) || !self.connected {
+        if !self.connected {
             return;
         }
-        self.send(active);
+        let active = self.settings.active();
+        if self.sent != Some(active) {
+            self.send(active);
+        }
+        let dolby = self.settings.dolby();
+        if self.connected && self.sent_dolby != Some(dolby) {
+            self.send_dolby(dolby);
+        }
+    }
+
+    /// Manda al nodo l'interruttore generale.
+    pub fn send_dolby(&mut self, on: bool) {
+        match control::send(&self.socket, &control::dolby_command(on)) {
+            Ok(Reply::Ok(_)) => self.sent_dolby = Some(on),
+            Ok(Reply::Error(e)) => self.error = format!("Il nodo ha rifiutato «{}»: {e}", control::dolby_command(on)),
+            Err(_) => {
+                self.connected = false;
+                self.sent = None;
+                self.sent_dolby = None;
+            }
+        }
     }
 
     pub fn send(&mut self, profile: Profile) {
@@ -45,6 +66,7 @@ impl App {
             Err(_) => {
                 self.connected = false;
                 self.sent = None;
+                self.sent_dolby = None;
             }
         }
         self.throttle.sent(Instant::now());
@@ -54,8 +76,8 @@ impl App {
     pub fn poll(&mut self) -> String {
         match control::send(&self.socket, "stato") {
             Ok(Reply::Ok(text)) => {
-                let field = |k: &str| text.split(' ').find_map(|w| w.strip_prefix(k)).unwrap_or("?").to_string();
-                let node_profile = field("profilo=");
+                let field = |k: &str| control::field(&text, k).unwrap_or("?").to_string();
+                let node_profile = field("profilo");
                 let first = !self.connected;
                 self.connected = true;
                 let active = self.settings.active();
@@ -66,8 +88,31 @@ impl App {
                     // Il nodo è partito con un altro profilo: vale quello delle impostazioni.
                     self.send(active);
                 }
-                let modulo = if field("modulo=") == "fermo" { "in attesa di audio" } else { "in elaborazione" };
-                let mismatch = if same || first { String::new() } else { format!(" · il nodo usa {node_profile}") };
+                // Interruttore generale: un nodo senza il campo (prima della 12.16) è sempre acceso.
+                let mut node_dolby = control::parse_on_off(&field("dolby")).unwrap_or(true);
+                let dolby = self.settings.dolby();
+                if node_dolby == dolby {
+                    self.sent_dolby = Some(dolby);
+                } else if first {
+                    self.send_dolby(dolby);
+                    if self.sent_dolby == Some(dolby) {
+                        node_dolby = dolby;
+                    }
+                }
+                let modulo = if !node_dolby {
+                    "elaborazione Dolby spenta (stereo)"
+                } else if field("modulo") == "fermo" {
+                    "in attesa di audio"
+                } else {
+                    "in elaborazione"
+                };
+                let mut mismatch = String::new();
+                if !same && !first {
+                    mismatch += &format!(" · il nodo usa {node_profile}");
+                }
+                if node_dolby != dolby && !first {
+                    mismatch += if node_dolby { " · nel nodo Dolby è acceso" } else { " · nel nodo Dolby è spento" };
+                }
                 format!("Nodo collegato · {modulo}{mismatch}")
             }
             Ok(Reply::Error(e)) => {
@@ -100,7 +145,8 @@ mod tests {
     /// gli stati che contengono "custom3".
     struct FakeNode {
         socket: PathBuf,
-        state: Arc<Mutex<(String, Vec<String>)>>,
+        /// Profilo, comandi ricevuti, interruttore generale.
+        state: Arc<Mutex<(String, Vec<String>, bool)>>,
     }
 
     impl FakeNode {
@@ -108,7 +154,7 @@ mod tests {
             let socket = std::env::temp_dir().join(format!("os-ui-{name}-{}.sock", std::process::id()));
             let _ = std::fs::remove_file(&socket);
             let listener = UnixListener::bind(&socket).unwrap();
-            let state = Arc::new(Mutex::new((profile.to_string(), Vec::new())));
+            let state = Arc::new(Mutex::new((profile.to_string(), Vec::new(), true)));
             let st = state.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming() {
@@ -123,7 +169,11 @@ mod tests {
                             g.0 = p.to_string();
                             format!("ok profilo {p}")
                         }
-                        _ if line == "stato" => format!("ok profilo={} modulo=fermo cambi=0", g.0),
+                        Some(("dolby", v @ ("on" | "off"))) => {
+                            g.2 = v == "on";
+                            format!("ok dolby {v}")
+                        }
+                        _ if line == "stato" => format!("ok profilo={} dolby={} modulo=fermo cambi=0", g.0, control::on_off(g.2)),
                         _ => "errore comando".to_string(),
                     };
                     g.1.push(line);
@@ -157,6 +207,7 @@ mod tests {
             path,
             socket,
             sent: None,
+            sent_dolby: None,
             connected: false,
             throttle: Throttle::new(Duration::from_millis(100)),
             flush_pending: false,
@@ -199,6 +250,31 @@ mod tests {
         a.settings.select(Kind::Custom3);
         a.flush();
         assert!(a.error.contains("rifiutato"), "{}", a.error);
+        std::fs::remove_file(&a.path).unwrap();
+    }
+
+    #[test]
+    fn interruttore_generale() {
+        let node = FakeNode::start("dolby", "film:off");
+        let mut a = app("dolby", node.socket.clone());
+        // Salvato spento: al primo contatto il nodo (acceso) viene spento.
+        a.settings.set_dolby(false);
+        assert!(a.poll().contains("Dolby spenta"));
+        assert!(!node.state.lock().unwrap().2);
+        assert_eq!(a.sent_dolby, Some(false));
+        // Riacceso dalla finestra: un solo comando, salvato nel file.
+        a.settings.set_dolby(true);
+        a.flush();
+        a.flush();
+        assert!(node.state.lock().unwrap().2);
+        let cmds: Vec<String> = node.state.lock().unwrap().1.iter().filter(|c| c.starts_with("dolby")).cloned().collect();
+        assert_eq!(cmds, ["dolby off", "dolby on"]);
+        assert!(Settings::load(&a.path).unwrap().dolby());
+        // Spento da fuori (os-ctl): lo si mostra senza imporre il nostro.
+        node.state.lock().unwrap().2 = false;
+        let status = a.poll();
+        assert!(status.contains("nel nodo Dolby è spento"), "{status}");
+        assert!(!node.state.lock().unwrap().2);
         std::fs::remove_file(&a.path).unwrap();
     }
 }

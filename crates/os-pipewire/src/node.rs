@@ -43,7 +43,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -259,6 +259,9 @@ struct Shared {
     sessions_ended: AtomicU64,
     /// Cambi di profilo pronti, dal thread principale al real time (che non aspetta il lock).
     control: std::sync::Mutex<Vec<Change>>,
+    /// Interruttore generale spento (doc 12.16): lo scrive il thread principale, il ciclo
+    /// successivo lo passa allo Streamer.
+    bypass: AtomicBool,
     stats: Stats,
 }
 
@@ -375,6 +378,10 @@ impl Shared {
                     self.stats.errors.fetch_add(1, Ordering::Relaxed);
                 }
             }
+        }
+        let bypass = self.bypass.load(Ordering::Acquire);
+        if bypass != rt.streamer.bypass() && rt.streamer.set_bypass(bypass).is_err() {
+            self.stats.errors.fetch_add(1, Ordering::Relaxed);
         }
         let (sb, requested) = unsafe { ((*out).buffer, (*out).requested as usize) };
         let datas = unsafe { std::slice::from_raw_parts_mut((*sb).datas, (*sb).n_datas as usize) };
@@ -627,8 +634,12 @@ pub fn run(args: Args) -> Result<()> {
         latency: AtomicUsize::new(0),
         sessions_ended: AtomicU64::new(0),
         control: std::sync::Mutex::new(Vec::with_capacity(8)),
+        bypass: AtomicBool::new(args.bypass),
         stats: Stats::default(),
     });
+    if args.bypass {
+        eprintln!("elaborazione Dolby spenta (--bypass): uscita in downmix stereo");
+    }
     // Lo Streamer parte fermo; senza questo `stato` direbbe "in moto" fino al primo ciclo.
     shared.stats.idle.store(true, Ordering::Relaxed);
 
@@ -930,8 +941,10 @@ fn open_fifo(path: &Path) -> Result<std::fs::File> {
 ///                                     profilo nuovo, sulla stessa istanza del modulo; con
 ///                                     `frame` dal blocco che inizia al frame n della sessione
 ///                                     (per la verifica)
-///   stato                             profilo attivo, stato del modulo, cambi consegnati,
-///                                     versione e commit del nodo
+///   dolby <on|off>                    interruttore generale (doc 12.16): con off il modulo è
+///                                     fermato e l'uscita è il downmix stereo dei sink
+///   stato                             profilo attivo, interruttore, stato del modulo, cambi
+///                                     consegnati, versione e commit del nodo
 /// Sul socket ogni comando ha una riga di risposta, `ok …` oppure `errore …`.
 struct Control {
     shared: Arc<Shared>,
@@ -977,8 +990,9 @@ impl Control {
             ["stato"] => {
                 let s = &self.shared.stats;
                 Ok(format!(
-                    "profilo={} modulo={} cambi={} consegnati={} fini-sessione={} versione={} commit={}",
+                    "profilo={} dolby={} modulo={} cambi={} consegnati={} fini-sessione={} versione={} commit={}",
                     self.current,
+                    os_profiles::control::on_off(!self.shared.bypass.load(Ordering::Acquire)),
                     if s.idle.load(Ordering::Relaxed) { "fermo" } else { "in-moto" },
                     self.accepted,
                     s.changes.load(Ordering::Relaxed),
@@ -1004,7 +1018,13 @@ impl Control {
                 self.accepted += 1;
                 Ok(format!("profilo {target}"))
             }
-            _ => bail!("comando sconosciuto (profilo <cartella|stato> [frame <n>], stato)"),
+            ["dolby", v] => {
+                let on = os_profiles::control::parse_on_off(v).context("uso: dolby <on|off>")?;
+                self.shared.bypass.store(!on, Ordering::Release);
+                eprintln!("elaborazione Dolby {}", if on { "accesa" } else { "spenta: downmix stereo" });
+                Ok(format!("dolby {v}"))
+            }
+            _ => bail!("comando sconosciuto (profilo <cartella|stato> [frame <n>], dolby <on|off>, stato)"),
         }
     }
 }
