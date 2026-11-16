@@ -22,7 +22,8 @@ repository privato `giacomomicoli/open-surround-private`, montato come submodule
   `docs/reference/` e nei messaggi di commit puntano a sezioni di `private/analisi-dolby-access.md`.
   Il README pubblico ne riporta solo un riassunto: per i dettagli leggi sempre il documento privato.
 - Gli script di verifica cercano le registrazioni in `target/verify`:
-  `ln -s ../private/verify target/verify` dalla radice del repository.
+  `ln -s ../private/verify target/verify` dalla radice del repository (su Windows una junction,
+  che non vuole l'amministratore: `mklink /J target\verify private\verify`).
 - Le 3 tracce di audio reale (`verify-reale.tar.gz`) non sono in nessun repository: restano sulla
   macchina Windows (doc 12.13, passo W3).
 
