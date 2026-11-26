@@ -18,6 +18,12 @@
 #   PROFILE=1 …      fase 5 (doc 12.14, L3): il nodo usa i blob generati dal modello dei profili
 #                    (--profile, stato ricavato dalla cattura con os-blob import) invece di
 #                    quelli catturati; uscite in target/verify-pipewire-profilo
+#   FORCE_QUANTUM_AT=<s> …  cambio di quantum durante la riproduzione (doc 12.15, "Instabilità
+#                    all'avvio delle sessioni"; esito nella 12.17): s secondi dopo l'avvio di
+#                    pw-play imposta clock.force-quantum a 2048 nei metadati globali, e lo rimette
+#                    a 0 alla fine di ogni caso. Tocca il grafo di tutto il sistema, uscita reale
+#                    compresa: solo con il permesso di chi usa la macchina. Uscite in
+#                    target/verify-pipewire-quantum
 
 set -u
 cd "$(dirname "$0")/../.."
@@ -27,9 +33,11 @@ FILTER="${2:-}"
 LATENCY="${LATENCY:-}"
 NODE_ARGS="${NODE_ARGS:-}"
 PROFILE="${PROFILE:-}"
+FORCE_QUANTUM_AT="${FORCE_QUANTUM_AT:-}"
 VERIFY=target/verify
 OUT=target/verify-pipewire
 [ -n "$PROFILE" ] && OUT=target/verify-pipewire-profilo
+[ -n "$FORCE_QUANTUM_AT" ] && OUT=target/verify-pipewire-quantum
 OSBLOB=target/debug/os-blob
 NODE=target/debug/os-pipewire
 WAVCMP=target/debug/wavcmp
@@ -41,7 +49,7 @@ NULL=os-verify-null
 # (tmpfs) e si sposta il file alla fine.
 REC="${XDG_RUNTIME_DIR:-/dev/shm}/os-verify-node.wav"
 
-for tool in pw-play pw-record pw-cli pw-dump wpctl ffmpeg ffprobe python3; do
+for tool in pw-play pw-record pw-cli pw-metadata pw-dump wpctl ffmpeg ffprobe python3; do
     command -v "$tool" > /dev/null || { echo "manca $tool"; exit 1; }
 done
 [ -x "$NODE" ] && [ -x "$WAVCMP" ] || { echo "prima: cargo build"; exit 1; }
@@ -77,7 +85,11 @@ stop() {
 }
 
 node_pid=""
+force_quantum() {
+    pw-metadata -n settings 0 clock.force-quantum "$1" > /dev/null
+}
 cleanup() {
+    [ -n "$FORCE_QUANTUM_AT" ] && force_quantum 0
     [ -n "$node_pid" ] && stop "$node_pid"
     id=$(node_id "$NULL")
     [ -n "$id" ] && pw-cli destroy "$id" > /dev/null 2>&1
@@ -193,10 +205,20 @@ for dir in "$VERIFY"/*/ "$VERIFY"/*/*/; do
     rec_pid=$!
     sleep 1
     # Upmix disattivato: uno stereo nel sink 7.1 deve restare FL/FR (bed, come un gioco su Windows).
-    pw-play --target "$sink" -P '{ channelmix.upmix = false }' --volume 1.0 "$input" > "$out/play.log" 2>&1
+    if [ -n "$FORCE_QUANTUM_AT" ]; then
+        force_quantum 0
+        pw-play --target "$sink" -P '{ channelmix.upmix = false }' --volume 1.0 "$input" > "$out/play.log" 2>&1 &
+        play_pid=$!
+        sleep "$FORCE_QUANTUM_AT"
+        force_quantum 2048
+        wait "$play_pid"
+    else
+        pw-play --target "$sink" -P '{ channelmix.upmix = false }' --volume 1.0 "$input" > "$out/play.log" 2>&1
+    fi
     sleep 1
     stop "$rec_pid"
     stop "$node_pid"; node_pid=""
+    [ -n "$FORCE_QUANTUM_AT" ] && force_quantum 0
     mv "$REC" "$out/node.wav"
 
     "$WAVCMP" --onset --segments 3 "$dir/loopback.wav" "$out/node.wav" > "$out/wavcmp.txt" 2>&1
@@ -206,6 +228,10 @@ for dir in "$VERIFY"/*/ "$VERIFY"/*/*/; do
     worst_overall=$(worstdb "$worst_overall" "$worst")
     lat=$(grep -oP 'latenza dell.adattatore: \K[0-9]+' "$out/node.log" | tail -1)
     stats=$(grep '^\[nodo\]' "$out/node.log" | tail -1 | grep -oP 'errori \K[0-9]+')
+    if [ -n "$FORCE_QUANTUM_AT" ]; then
+        diverso=$(grep '^\[nodo\]' "$out/node.log" | tail -1 | grep -oP "ingresso diverso dall'uscita \K[0-9]+")
+        echo "      ingresso diverso dall'uscita: ${diverso:-?} cicli"
+    fi
     if awk -v w="${worst:-0}" 'BEGIN{exit (w+0 <= -130) ? 0 : 1}' && [ "${stats:-1}" = "0" ]; then
         echo "OK    $name ($sink): residuo $worst dB (guadagno $gain, latenza adattatore ${lat:-?} frame)"
         pass=$((pass + 1))

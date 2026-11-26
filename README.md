@@ -325,8 +325,8 @@ real-audio ones also contain copyrighted material. The scripts expect them in `t
 | 6 | Settings window, service, installer, prebuilt package, updates; Windows build of the window | done |
 
 All planned phases are done. After them: a global on/off switch (Dolby processing off = plain
-stereo). Small open points (equalizer presets in the Voice profile) will be picked up only if
-needed.
+stereo), released in v0.3.0. Small open points (equalizer presets in the Voice profile) will be
+picked up only if needed.
 
 ## Security
 
